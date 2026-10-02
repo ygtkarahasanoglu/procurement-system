@@ -1,0 +1,18 @@
+:root {
+  color-scheme: light;
+  font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f4f5f7;
+  color: #1a1d23;
+}
+
+#root {
+  min-height: 100vh;
+}

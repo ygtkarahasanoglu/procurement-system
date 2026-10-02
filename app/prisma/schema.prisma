@@ -1,0 +1,306 @@
+// YGT Procurement System — MVP vertical slice data model.
+//
+// Scope: only the entities needed for the single ratified-rule-complete
+// scenario (Request -> Quotes -> AI Recommendation -> Human Decision ->
+// Frozen DecisionPackage -> Approval -> PurchaseOrder). See
+// app/README.md for the mapping from each model to the ratified decision
+// it implements, and for what is explicitly NOT implemented in V1.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------
+// Tenancy & actors
+// ---------------------------------------------------------------------
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  users            User[]
+  products         Product[]
+  suppliers        Supplier[]
+  requests         ProcurementRequest[]
+  requestLines     RequestLine[]
+  sourcingEvents   SourcingEvent[]
+  supplierQuotes   SupplierQuote[]
+  quoteVersions    QuoteVersion[]
+  recommendations  RecommendationRecord[]
+  decisionPackages DecisionPackage[]
+  approvals        Approval[]
+  purchaseOrders   PurchaseOrder[]
+}
+
+// Minimum actor representation. Role is a plain string for V1 — see
+// README "Authorization" section for what this does and does not enforce.
+model User {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  name      String
+  role      String // e.g. "procurement_user" | "approver" — see README
+  createdAt DateTime @default(now())
+
+  requestsCreated  ProcurementRequest[] @relation("RequestCreatedBy")
+  decisionsFormed  DecisionPackage[]    @relation("DecisionCreatedBy")
+  approvalsGranted Approval[]           @relation("ApprovalGrantedBy")
+
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------
+// Product / Supplier reference data
+// ---------------------------------------------------------------------
+
+// Minimum product reference for V1. The full Product Identity domain
+// (PI-C1-PI-C11) is NOT implemented here — this is a flat reference,
+// not a category-specific identity model. See README limitations.
+model Product {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  name      String
+  sku       String
+  createdAt DateTime @default(now())
+
+  requestLines  RequestLine[]
+  quoteVersions QuoteVersion[]
+
+  @@index([tenantId])
+}
+
+model Supplier {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  name      String
+  createdAt DateTime @default(now())
+
+  supplierQuotes SupplierQuote[]
+
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------
+// Procurement Request / Request Line (RL-C1, RL-C2)
+// ---------------------------------------------------------------------
+
+model ProcurementRequest {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  createdById String
+  createdBy   User     @relation("RequestCreatedBy", fields: [createdById], references: [id])
+  status      String   @default("OPEN")
+  createdAt   DateTime @default(now())
+
+  lines RequestLine[]
+
+  @@index([tenantId])
+}
+
+// RL-C1: a Request may contain one or more independent lines.
+model RequestLine {
+  id                String             @id @default(uuid())
+  tenantId          String
+  tenant            Tenant             @relation(fields: [tenantId], references: [id])
+  requestId         String
+  request           ProcurementRequest @relation(fields: [requestId], references: [id])
+  productId         String
+  product           Product            @relation(fields: [productId], references: [id])
+  requestedQuantity Decimal            @db.Decimal(18, 4)
+  unit              String
+  createdAt         DateTime           @default(now())
+
+  sourcingEvents SourcingEvent[]
+
+  @@index([tenantId])
+  @@index([requestId])
+}
+
+// ---------------------------------------------------------------------
+// Sourcing / Quotes (RL-C2, RL-C3, RL-C4, PI-C8)
+// ---------------------------------------------------------------------
+
+// RL-C3: one active SourcingEvent per Request Line is the ratified shape;
+// V1 enforces this at the service layer (see sourcingService.ts), not
+// via a DB constraint, since "active" requires a status check this
+// schema alone cannot express declaratively without a partial index.
+model SourcingEvent {
+  id            String      @id @default(uuid())
+  tenantId      String
+  tenant        Tenant      @relation(fields: [tenantId], references: [id])
+  requestLineId String
+  requestLine   RequestLine @relation(fields: [requestLineId], references: [id])
+  status        String      @default("OPEN") // OPEN | CLOSED
+  createdAt     DateTime    @default(now())
+
+  supplierQuotes   SupplierQuote[]
+  recommendations  RecommendationRecord[]
+  decisionPackages DecisionPackage[]
+
+  @@index([tenantId])
+  @@index([requestLineId])
+}
+
+// A quote "header" from one supplier for one SourcingEvent. The
+// commercial content itself lives on QuoteVersion (immutable), per
+// 03-data-model.md ("each quote_version is immutable once created").
+model SupplierQuote {
+  id              String        @id @default(uuid())
+  tenantId        String
+  tenant          Tenant        @relation(fields: [tenantId], references: [id])
+  sourcingEventId String
+  sourcingEvent   SourcingEvent @relation(fields: [sourcingEventId], references: [id])
+  supplierId      String
+  supplier        Supplier      @relation(fields: [supplierId], references: [id])
+  createdAt       DateTime      @default(now())
+
+  versions QuoteVersion[]
+
+  @@index([tenantId])
+  @@index([sourcingEventId])
+}
+
+// Immutable once created (03-data-model.md). V1 only ever creates
+// version 1 per SupplierQuote — no re-quoting/versioning workflow is
+// implemented (that is future scope: QuoteVersion substitution, OPEN).
+model QuoteVersion {
+  id              String        @id @default(uuid())
+  tenantId        String
+  tenant          Tenant        @relation(fields: [tenantId], references: [id])
+  supplierQuoteId String
+  supplierQuote   SupplierQuote @relation(fields: [supplierQuoteId], references: [id])
+  versionNumber   Int           @default(1)
+  productId       String
+  product         Product       @relation(fields: [productId], references: [id])
+  quotedQuantity  Decimal       @db.Decimal(18, 4)
+  unit            String
+  unitPrice       Decimal       @db.Decimal(18, 4)
+  currency        String
+  createdAt       DateTime      @default(now())
+
+  recommendations  RecommendationRecord[]
+  decisionPackages DecisionPackage[]
+
+  @@unique([supplierQuoteId, versionNumber])
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------
+// AI Recommendation (CR-C: non-binding, NOT the approved decision)
+// ---------------------------------------------------------------------
+
+// Explicitly non-authoritative. Never read by approvalService or
+// purchaseOrderService. See recommendationService.ts for the
+// deterministic/test provider that produces these records.
+model RecommendationRecord {
+  id                          String        @id @default(uuid())
+  tenantId                    String
+  tenant                      Tenant        @relation(fields: [tenantId], references: [id])
+  sourcingEventId             String
+  sourcingEvent               SourcingEvent @relation(fields: [sourcingEventId], references: [id])
+  recommendedQuoteVersionId   String
+  recommendedQuoteVersion     QuoteVersion  @relation(fields: [recommendedQuoteVersionId], references: [id])
+  recommendedQuantity         Decimal       @db.Decimal(18, 4)
+  providerName                String // e.g. "deterministic-test-provider-v1"
+  isDeterministicTestProvider Boolean       @default(true)
+  rationale                   String
+  createdAt                   DateTime      @default(now())
+
+  @@index([tenantId])
+  @@index([sourcingEventId])
+}
+
+// ---------------------------------------------------------------------
+// Decision Formation / Freeze (CR-C, QS-C1, QS-C2)
+// ---------------------------------------------------------------------
+
+// status DRAFT -> FROZEN is a one-way transition (decisionService.ts).
+// Once FROZEN, no service function mutates the commercial fields below —
+// that immutability is enforced structurally (no update path exists),
+// not merely by a status check at every call site.
+model DecisionPackage {
+  id                   String        @id @default(uuid())
+  tenantId             String
+  tenant               Tenant        @relation(fields: [tenantId], references: [id])
+  sourcingEventId      String
+  sourcingEvent        SourcingEvent @relation(fields: [sourcingEventId], references: [id])
+  sourceQuoteVersionId String
+  sourceQuoteVersion   QuoteVersion  @relation(fields: [sourceQuoteVersionId], references: [id])
+  supplierId           String
+  productId            String
+  selectedQuantity     Decimal       @db.Decimal(18, 4) // QS-C1: the decision-maker's chosen quantity
+  unit                 String
+  unitPrice            Decimal       @db.Decimal(18, 4)
+  currency             String
+  status               String        @default("DRAFT") // DRAFT | FROZEN
+  frozenAt             DateTime?
+  createdById          String
+  createdBy            User          @relation("DecisionCreatedBy", fields: [createdById], references: [id])
+  createdAt            DateTime      @default(now())
+
+  approvals Approval[]
+
+  @@index([tenantId])
+  @@index([sourcingEventId])
+}
+
+// ---------------------------------------------------------------------
+// Approval (M2, APO-D1, APO-D2)
+// ---------------------------------------------------------------------
+
+// INSERT-only (M2): no update/delete is ever exposed by approvalService.
+// V1 simplification (NOT a ratified cardinality decision): at most one
+// Approval per DecisionPackage, enforced by the unique constraint below.
+// Real PO/Approval/DecisionPackage cardinality is explicitly OPEN
+// (APO-D1 non-decisions, Q3 non-decision #11) — this unique constraint
+// is a V1 implementation choice, not a claim that cardinality is ratified.
+model Approval {
+  id                String          @id @default(uuid())
+  tenantId          String
+  tenant            Tenant          @relation(fields: [tenantId], references: [id])
+  decisionPackageId String          @unique
+  decisionPackage   DecisionPackage @relation(fields: [decisionPackageId], references: [id])
+  status            String          @default("APPROVED") // V1 only ever creates APPROVED rows
+  approvedById      String
+  approvedBy        User            @relation("ApprovalGrantedBy", fields: [approvedById], references: [id])
+  createdAt         DateTime        @default(now())
+
+  purchaseOrder PurchaseOrder?
+
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------
+// PurchaseOrder (CR-A, CR-B.1, CR-B.2, CR-D1, CR-D2, Q3, APO-D1, APO-D2)
+// ---------------------------------------------------------------------
+
+// V1 simplification (NOT a ratified cardinality decision): at most one
+// PurchaseOrder per Approval, enforced by the unique constraint below.
+// Every commercial field here is copied verbatim from the Approval's
+// DecisionPackage by purchaseOrderService.ts — there is no code path
+// that accepts these fields as caller-supplied input.
+model PurchaseOrder {
+  id         String   @id @default(uuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  approvalId String   @unique
+  approval   Approval @relation(fields: [approvalId], references: [id])
+  supplierId String
+  productId  String
+  quantity   Decimal  @db.Decimal(18, 4)
+  unit       String
+  unitPrice  Decimal  @db.Decimal(18, 4)
+  currency   String
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+}
