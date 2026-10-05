@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import express from "express";
 import { prisma } from "../src/db/client";
-import { findActiveSessionByRawToken } from "../src/api/session";
+import { createSession, findActiveSessionByRawToken } from "../src/api/session";
 
 // Browser OIDC login/callback transaction tests (AUTHN Step 5). Real
 // PostgreSQL for session/identity persistence, per this repository's
@@ -37,6 +37,12 @@ let baseUrl: string;
 
 async function httpGet(path: string, headers?: Record<string, string>) {
   const res = await fetch(`${baseUrl}${path}`, { method: "GET", headers, redirect: "manual" });
+  const bodyText = await res.text().catch(() => "");
+  return { status: res.status, headers: res.headers, bodyText };
+}
+
+async function httpPost(path: string, headers?: Record<string, string>) {
+  const res = await fetch(`${baseUrl}${path}`, { method: "POST", headers, redirect: "manual" });
   const bodyText = await res.text().catch(() => "");
   return { status: res.status, headers: res.headers, bodyText };
 }
@@ -410,6 +416,88 @@ describe("AuthN Step 5 — /auth/login and /auth/callback", () => {
 
         expect(await prisma.procurementRequest.count()).toBe(requestCountBefore);
       });
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // /auth/logout (AUTHN Step 7)
+  // ---------------------------------------------------------------
+  describe("/auth/logout", () => {
+    it("31. a valid session is revoked: logout succeeds and the session no longer authenticates", async () => {
+      const { rawToken } = await createSession(userId);
+      expect(await findActiveSessionByRawToken(rawToken)).not.toBeNull();
+
+      const res = await httpPost("/auth/logout", { cookie: `session=${rawToken}` });
+
+      expect(res.status).toBe(200);
+      expect(await findActiveSessionByRawToken(rawToken)).toBeNull();
+    });
+
+    it("32. logout without any session cookie still succeeds", async () => {
+      const res = await httpPost("/auth/logout");
+      expect(res.status).toBe(200);
+      expect(JSON.parse(res.bodyText)).toEqual({ ok: true });
+    });
+
+    it("33. logout with an unknown/invalid session token still succeeds", async () => {
+      const res = await httpPost("/auth/logout", { cookie: `session=${"0".repeat(64)}` });
+      expect(res.status).toBe(200);
+      expect(JSON.parse(res.bodyText)).toEqual({ ok: true });
+    });
+
+    it("34. logout is idempotent: calling it twice with the same already-revoked session still succeeds", async () => {
+      const { rawToken } = await createSession(userId);
+      const first = await httpPost("/auth/logout", { cookie: `session=${rawToken}` });
+      const second = await httpPost("/auth/logout", { cookie: `session=${rawToken}` });
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(JSON.parse(second.bodyText)).toEqual({ ok: true });
+    });
+
+    it("35. the response never reveals whether a session existed, was valid, expired, or already revoked — every case is byte-identical", async () => {
+      const { rawToken } = await createSession(userId);
+      const validRes = await httpPost("/auth/logout", { cookie: `session=${rawToken}` });
+      const missingRes = await httpPost("/auth/logout");
+      const unknownRes = await httpPost("/auth/logout", { cookie: `session=${"1".repeat(64)}` });
+
+      expect(validRes.status).toBe(missingRes.status);
+      expect(missingRes.status).toBe(unknownRes.status);
+      expect(validRes.bodyText).toBe(missingRes.bodyText);
+      expect(missingRes.bodyText).toBe(unknownRes.bodyText);
+    });
+
+    it("36. the response never contains a raw session token", async () => {
+      const { rawToken } = await createSession(userId);
+      const res = await httpPost("/auth/logout", { cookie: `session=${rawToken}` });
+      expect(res.bodyText).not.toContain(rawToken);
+    });
+
+    it("37. clears the session cookie with the same scope/attributes it was set with, and immediate expiry", async () => {
+      const { rawToken } = await createSession(userId);
+      const res = await httpPost("/auth/logout", { cookie: `session=${rawToken}` });
+
+      const setCookies = parseSetCookieHeaders(res.headers);
+      const clearedSession = findCookie(setCookies, "session");
+      expect(clearedSession).toBeDefined();
+      expect(clearedSession!.toLowerCase()).toContain("httponly");
+      expect(clearedSession!.toLowerCase()).toContain("secure");
+      expect(clearedSession!.toLowerCase()).toContain("samesite=lax");
+      expect(clearedSession!).toContain("Path=/;");
+      expect(clearedSession!.toLowerCase()).toMatch(/max-age=0/);
+    });
+
+    it("38. does not clear or otherwise touch the oidc_txn cookie", async () => {
+      const { rawToken } = await createSession(userId);
+      const res = await httpPost("/auth/logout", { cookie: `session=${rawToken}` });
+
+      const setCookies = parseSetCookieHeaders(res.headers);
+      expect(findCookie(setCookies, "oidc_txn")).toBeUndefined();
+    });
+
+    it("39. a malformed cookie header fails closed to a no-op logout rather than throwing", async () => {
+      const res = await httpPost("/auth/logout", { cookie: "%%%not-a-valid-cookie-header%%%=== ;;;" });
+      expect(res.status).toBe(200);
     });
   });
 });

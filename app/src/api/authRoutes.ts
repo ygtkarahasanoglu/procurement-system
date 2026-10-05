@@ -2,15 +2,11 @@ import { Router, type Request, type Response } from "express";
 import { serialize, parse } from "cookie";
 import { discoverProvider, buildAuthorizationRequest, exchangeAuthorizationCode } from "./oidc";
 import { resolveExternalIdentity, UNKNOWN_EXTERNAL_IDENTITY } from "./externalIdentity";
-import { createSession } from "./session";
+import { createSession, revokeSessionByRawToken } from "./session";
 
-// Browser OIDC login/callback transaction (docs/decisions/ratified.md,
-// AUTHN-1..AUTHN-11, Step 5). Builds a standalone, independently testable
-// Express Router — NOT mounted into createApp/server.ts, and the existing
-// Authenticator/authentication middleware are untouched. Wiring this
-// router into the running application, making any existing API route
-// authenticated, and adding /auth/me or /auth/logout are all explicitly
-// later, separate steps.
+// Browser OIDC login/callback/logout transaction (docs/decisions/
+// ratified.md, AUTHN-1..AUTHN-11, Steps 5 and 7). /auth/me remains an
+// explicitly later, separate step.
 //
 // Every cryptographic/protocol validation step (PKCE, state, nonce,
 // signature, issuer, audience, expiration) is delegated entirely to the
@@ -158,6 +154,31 @@ function serializeSessionCookie(rawToken: string, expiresAt: Date): string {
   });
 }
 
+function clearSessionCookie(): string {
+  return serialize(SESSION_COOKIE_NAME, "", {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
+}
+
+/** Mirrors sessionAuthenticator.ts's own cookie-reading discipline: defensive, never throws, returns null on anything unparseable. */
+function readSessionCookie(req: Request): string | null {
+  const header = req.headers.cookie;
+  if (!header) return null;
+
+  let cookies: Record<string, string | undefined>;
+  try {
+    cookies = parse(header);
+  } catch {
+    return null;
+  }
+
+  return cookies[SESSION_COOKIE_NAME] ?? null;
+}
+
 /** Never logs a raw token, authorization code, PKCE verifier, state, nonce, or session token — only non-secret diagnostic context. */
 function logServerSideFailure(stage: string, err: unknown): void {
   console.error(`[auth] ${stage}:`, err instanceof Error ? err.message : err);
@@ -290,6 +311,26 @@ export function createAuthRouter(): Router {
 
     res.setHeader("Set-Cookie", [clearTxnCookie, serializeSessionCookie(session.rawToken, session.expiresAt)]);
     res.redirect(302, POST_LOGIN_REDIRECT_PATH);
+  });
+
+  // AUTHN Step 7: completes the session lifecycle (create/validate already
+  // exist — see session.ts) with the one missing production operation,
+  // revoke. Deliberately requires no Principal — it must remain reachable
+  // via the /auth carve-out (mounted before the authentication middleware,
+  // server.ts) exactly like /login and /callback, so a request with a
+  // stale, expired, or already-revoked cookie can still always log out.
+  // Idempotent by construction: revokeSessionByRawToken is a safe no-op for
+  // a missing/unknown token, and this handler never reports back whether a
+  // session existed, was valid, or was already revoked — only that logout
+  // succeeded. The oidc_txn cookie is unrelated to this operation and is
+  // never touched here.
+  router.post("/logout", async (req: Request, res: Response) => {
+    const rawToken = readSessionCookie(req);
+    if (rawToken) {
+      await revokeSessionByRawToken(rawToken);
+    }
+    res.setHeader("Set-Cookie", clearSessionCookie());
+    res.status(200).json({ ok: true });
   });
 
   return router;

@@ -39,6 +39,12 @@ async function httpGet(path: string, headers?: Record<string, string>) {
   return { status: res.status, headers: res.headers, bodyText };
 }
 
+async function httpPost(path: string, headers?: Record<string, string>) {
+  const res = await fetch(`${baseUrl}${path}`, { method: "POST", headers, redirect: "manual" });
+  const bodyText = await res.text().catch(() => "");
+  return { status: res.status, headers: res.headers, bodyText };
+}
+
 function parseSetCookieHeaders(headers: Headers): string[] {
   const maybeGetSetCookie = (headers as unknown as { getSetCookie?: () => string[] }).getSetCookie;
   if (typeof maybeGetSetCookie === "function") return maybeGetSetCookie.call(headers);
@@ -161,5 +167,26 @@ describe("AUTHN Step 6A — real createApp(sessionAuthenticator) integration", (
     const res = await httpGet("/tenants");
     expect(res.status).toBe(401);
     expect(JSON.parse(res.bodyText)).toMatchObject({ error: "Unauthenticated" });
+  });
+
+  it("G. AUTHN Step 7: login -> callback -> logout -> the same session cookie no longer authenticates a later request", async () => {
+    const loginRes = await httpGet("/auth/login");
+    const loginCookies = parseSetCookieHeaders(loginRes.headers);
+    const txnCookie = findCookie(loginCookies, "oidc_txn")!.split(";")[0];
+
+    mockExchangeAuthorizationCode.mockResolvedValueOnce({ issuer: ISSUER, subject: KNOWN_SUBJECT });
+    const callbackRes = await httpGet("/auth/callback?code=mockcode&state=mockstate", { cookie: txnCookie });
+    const callbackCookies = parseSetCookieHeaders(callbackRes.headers);
+    const sessionCookie = findCookie(callbackCookies, "session")!.split(";")[0];
+
+    const authedRes = await httpGet(`/tenants/${tenantId}/context`, { cookie: sessionCookie });
+    expect(authedRes.status).toBe(200);
+
+    const logoutRes = await httpPost("/auth/logout", { cookie: sessionCookie });
+    expect(logoutRes.status).toBe(200);
+
+    const afterLogoutRes = await httpGet(`/tenants/${tenantId}/context`, { cookie: sessionCookie });
+    expect(afterLogoutRes.status).toBe(401);
+    expect(JSON.parse(afterLogoutRes.bodyText)).toMatchObject({ error: "Unauthenticated" });
   });
 });
