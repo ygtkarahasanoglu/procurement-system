@@ -13,6 +13,8 @@ import { AuthorizationError } from "../domain/authorization";
 import { NotFoundError, InvalidStateError, ApprovalRequiredError, CommercialDeviationError, ValidationError } from "../domain/errors";
 import type { Authenticator, Principal } from "./principal";
 import { assertTenantMatches } from "./tenantBinding";
+import { createAuthRouter } from "./authRoutes";
+import { sessionAuthenticator } from "./sessionAuthenticator";
 
 // API layer for the backend, consumed by the web UI under app/web (a
 // separate Vite dev server/origin — hence `cors()` below) and still
@@ -55,6 +57,16 @@ export function createApp(authenticator: Authenticator) {
     }
     next();
   });
+
+  // AUTHN Step 6A: the OIDC login/callback bootstrap routes (GET /auth/login,
+  // GET /auth/callback) are mounted here, BEFORE the authentication
+  // middleware below. This is deliberate and load-bearing: a browser with
+  // no session yet must be able to reach these two routes to ever obtain
+  // one. This is the only unauthenticated carve-out introduced by this
+  // step — exactly the two routes createAuthRouter() itself defines, never
+  // a broader bypass. Every other route, registered after the middleware
+  // below (unchanged), remains exactly as protected as before.
+  app.use("/auth", createAuthRouter());
 
   // Authentication boundary (AUTH-1/2/3/5/6 planning, Step 4). Invokes the
   // injected Authenticator (read from app.locals, per the Step 3 seam)
@@ -270,19 +282,14 @@ export function createApp(authenticator: Authenticator) {
   return app;
 }
 
-// Composition-root fail-closed default (AUTH-1/2/3/5/6 planning, Step 4).
-// No real Authenticator has been chosen or wired yet — that selection is
-// explicitly out of scope here. Rather than silently accepting every
-// request as anonymous, the runtime boots with an authenticator that
-// always reports "no principal," so the authentication middleware above
-// rejects every request with 401 until a real Authenticator replaces this.
-// This is not an authentication mechanism and must never be treated as
-// one — it is the deliberate absence of one, chosen over an insecure
-// implicit allow. It is not exported and is not a development/test
-// authenticator (see app/test/support for that).
-const failClosedAuthenticator: Authenticator = async () => null;
-
-const app = createApp(failClosedAuthenticator);
+// Composition-root authenticator (AUTHN Step 6A). The production runtime
+// now uses the real, session-backed Authenticator (sessionAuthenticator.ts)
+// — browser session cookie -> findActiveSessionByRawToken -> User ->
+// Principal{userId, tenantId}, exactly as ratified. No OIDC issuer/subject,
+// email, role, or any other identity concept enters Principal; the
+// authentication middleware above and every existing route are otherwise
+// completely unchanged by this swap.
+const app = createApp(sessionAuthenticator);
 
 const port = process.env.PORT ? Number(process.env.PORT) : 3000;
 if (require.main === module) {
