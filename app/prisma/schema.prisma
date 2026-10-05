@@ -52,6 +52,11 @@ model User {
   decisionsFormed  DecisionPackage[]    @relation("DecisionCreatedBy")
   approvalsGranted Approval[]           @relation("ApprovalGrantedBy")
 
+  // AUTHN-1..AUTHN-11, Step 2: persistence only — no runtime authentication
+  // exists yet. See the "Human authentication" section below.
+  externalIdentities ExternalIdentity[]
+  sessions           Session[]
+
   @@index([tenantId])
 }
 
@@ -303,4 +308,44 @@ model PurchaseOrder {
   createdAt  DateTime @default(now())
 
   @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------
+// Human authentication (docs/decisions/ratified.md, AUTHN-1..AUTHN-11,
+// Step 2 — persistence only). No runtime authentication exists yet: no
+// route reads or writes these tables, and the production composition
+// root is unchanged (still fail-closed). See oidc.ts (Step 1) for the
+// generic OIDC verification module these tables will eventually support.
+// ---------------------------------------------------------------------
+
+// (issuer, subject) -> User.id, per AUTHN-2 — the external identity key
+// is this pair, never email. Deliberately carries no tenantId: tenant
+// ownership is obtained through the mapped User, consistent with the
+// existing single-tenant User.tenantId model (no R5 membership work).
+model ExternalIdentity {
+  id        String   @id @default(uuid())
+  issuer    String
+  subject   String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([issuer, subject])
+  @@index([userId])
+}
+
+// Server-side session (AUTHN-4). Only a SHA-256 hash of the session token
+// is ever persisted here — the raw token exists solely in the browser's
+// cookie and is never written to this table. tokenHash is the primary
+// key: a session is always looked up by exactly this one value, so no
+// separate id column exists.
+model Session {
+  tokenHash  String   @id
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
 }
