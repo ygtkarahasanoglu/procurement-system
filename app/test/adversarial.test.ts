@@ -1982,4 +1982,53 @@ describe("Adversarial / hardening tests", () => {
       expect(Object.keys(tenants[0]).sort()).toEqual(["id", "name"]);
     });
   });
+
+  describe("Group 17 — AUTHN Step 8: GET /auth/me", () => {
+    it("an authenticated request returns exactly { userId, tenantId }", async () => {
+      const res = await httpGet("/auth/me");
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual({ userId: procurementUserId, tenantId: tenantId });
+    });
+
+    it("an unauthenticated request receives the existing 401 response", async () => {
+      const res = await httpGet("/auth/me", null);
+      expect(res.status).toBe(401);
+      expect(res.json).toEqual({ error: "Unauthenticated", message: "Authentication is required." });
+    });
+
+    it("a client-supplied tenantId (query parameter) cannot influence the response", async () => {
+      const res = await httpGet(`/auth/me?tenantId=${otherTenantId}`);
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual({ userId: procurementUserId, tenantId: tenantId });
+    });
+
+    it("a client-supplied userId (query parameter) cannot influence the response", async () => {
+      const res = await httpGet(`/auth/me?userId=${otherTenantUserId}`);
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual({ userId: procurementUserId, tenantId: tenantId });
+    });
+
+    it("a client-supplied identity header, distinct from the real test-auth headers, cannot broaden or alter the response", async () => {
+      // As in Group 16's analogous case: passing `headers` replaces the
+      // default auth headers entirely, so the real test principal's own
+      // headers are included explicitly alongside the injected, unrelated
+      // one. `sessionAuthenticator` (the production authenticator) never
+      // reads this header at all; this proves the route itself adds no
+      // additional identity source on top of whatever the authenticator
+      // already established.
+      const res = await httpGet("/auth/me", {
+        [TEST_USER_ID_HEADER]: procurementUserId,
+        [TEST_TENANT_ID_HEADER]: tenantId,
+        "x-actor-user-id": otherTenantUserId,
+      });
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual({ userId: procurementUserId, tenantId: tenantId });
+    });
+
+    it("the response contains exactly the Principal shape — no email, role, session, or OIDC fields", async () => {
+      const res = await httpGet("/auth/me");
+      expect(res.status).toBe(200);
+      expect(Object.keys(res.json as Record<string, unknown>).sort()).toEqual(["tenantId", "userId"]);
+    });
+  });
 });

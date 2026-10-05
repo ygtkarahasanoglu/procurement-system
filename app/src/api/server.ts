@@ -106,6 +106,21 @@ export function createApp(authenticator: Authenticator) {
     };
   }
 
+  // AUTHN Step 8: minimal authenticated-identity reflection endpoint.
+  // Returns exactly the existing Principal{userId, tenantId} already
+  // established by the authentication middleware above — no OIDC claims,
+  // email, role, session metadata, or any other field is read or
+  // returned (AUTHN-6). Deliberately mounted here, after the
+  // authentication middleware, rather than inside authRoutes.ts's /auth
+  // carve-out (mounted before it) — an unauthenticated request must get
+  // the existing 401, not a bypass. req.principal is derived exclusively
+  // from the session cookie via sessionAuthenticator; no query/body/header
+  // field supplied by the client is ever consulted.
+  app.get(
+    "/auth/me",
+    wrap(async (req) => ({ userId: req.principal!.userId, tenantId: req.principal!.tenantId }))
+  );
+
   // Read-only views for the UI (section 19: reuse existing endpoints
   // wherever possible; these are the minimum new reads the UI genuinely
   // needs and none of them perform or duplicate any business rule — see
