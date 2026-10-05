@@ -118,9 +118,14 @@ export function createApp(authenticator: Authenticator) {
   // middleware, unchanged). req.principal is guaranteed set here: the
   // Step 4 authentication middleware above already rejected with 401 any
   // request that lacks one, before this route table is ever reached.
-  // GET /tenants is deliberately unchanged — its contract remains OPEN,
-  // not resolved by this step.
-  app.get("/tenants", wrap(() => queryService.listTenants()));
+  // AUTHN-10 (Step 6B): scoped exclusively to req.principal!.tenantId —
+  // this endpoint takes no external tenant claim (no path/query/body/header
+  // tenant identifier is read for this route), so there is nothing to
+  // validate against the principal; the principal's own tenantId is simply
+  // the sole input. assertTenantMatches is deliberately not used here — it
+  // exists to validate an externally claimed tenantId against the
+  // principal, and this route has no such claim to validate.
+  app.get("/tenants", wrap((req) => queryService.listTenants(req.principal!.tenantId)));
   app.get(
     "/tenants/:id/context",
     wrap((req) => queryService.getTenantContext(assertTenantMatches(req.principal!, req.params.id)))

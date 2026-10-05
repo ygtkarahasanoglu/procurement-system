@@ -1935,4 +1935,51 @@ describe("Adversarial / hardening tests", () => {
       });
     });
   });
+
+  // ---------------------------------------------------------------
+  // Group 16 — AUTHN-10: GET /tenants scoped exclusively to req.principal
+  // ---------------------------------------------------------------
+  // Closes the gap the earlier Step 4/13 test deliberately left open ("GET
+  // /tenants is deliberately unchanged — its contract remains OPEN"): now
+  // that real authenticated access exists, this endpoint must return only
+  // the authenticated principal's own tenant, never every tenant, and no
+  // client-supplied field may broaden that scope. Unauthenticated access
+  // (401) is already covered by Group 13's "A (read)" test and Group 15's
+  // unauthenticated matrix — not duplicated here.
+  describe("Group 16 — AUTHN-10: GET /tenants principal-exclusive scoping", () => {
+    it("an authenticated principal receives an array containing exactly its own tenant, never another tenant", async () => {
+      const res = await httpGet("/tenants"); // default headers authenticate as tenantId's principal
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual([{ id: tenantId, name: expect.any(String) }]);
+      const ids = (res.json as Array<{ id: string }>).map((t) => t.id);
+      expect(ids).not.toContain(otherTenantId);
+    });
+
+    it("a client-supplied tenant identifier (query parameter) cannot broaden the result", async () => {
+      const res = await httpGet(`/tenants?tenantId=${otherTenantId}`);
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual([{ id: tenantId, name: expect.any(String) }]);
+    });
+
+    it("a client-supplied tenant identifier (custom header) cannot broaden the result", async () => {
+      // Passing `headers` to httpGet replaces the default auth headers
+      // entirely (it does not merge) — so the real test principal's own
+      // headers must be included explicitly alongside the injected one.
+      const res = await httpGet("/tenants", {
+        [TEST_USER_ID_HEADER]: procurementUserId,
+        [TEST_TENANT_ID_HEADER]: tenantId,
+        "x-tenant-id": otherTenantId,
+      });
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual([{ id: tenantId, name: expect.any(String) }]);
+    });
+
+    it("the response shape remains an array of { id, name } objects", async () => {
+      const res = await httpGet("/tenants");
+      expect(res.status).toBe(200);
+      const tenants = res.json as Array<Record<string, unknown>>;
+      expect(tenants).toHaveLength(1);
+      expect(Object.keys(tenants[0]).sort()).toEqual(["id", "name"]);
+    });
+  });
 });

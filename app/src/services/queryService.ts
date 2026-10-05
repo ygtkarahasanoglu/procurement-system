@@ -14,8 +14,14 @@ import { NotFoundError } from "../domain/errors";
 // requests; and one aggregate "workflow state" read per RequestLine so
 // the UI doesn't need N round trips to render one screen).
 
-export async function listTenants() {
-  return prisma.tenant.findMany({ orderBy: { createdAt: "asc" }, select: { id: true, name: true } });
+// AUTHN-10 (docs/decisions/ratified.md): scoped exclusively to the
+// authenticated principal's own tenant — never all tenants. tenantId here
+// must come only from req.principal!.tenantId at the call site
+// (server.ts); this function has no way to distinguish a verified
+// principal's tenantId from a client-supplied one, so that verification is
+// the caller's responsibility, not this function's.
+export async function listTenants(tenantId: string) {
+  return prisma.tenant.findMany({ where: { id: tenantId }, orderBy: { createdAt: "asc" }, select: { id: true, name: true } });
 }
 
 // Everything a dev user needs to populate selectors/forms for one tenant.
