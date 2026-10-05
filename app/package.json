@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.9.0",
+    "cookie": "^1.1.1",
     "cors": "^2.8.6",
     "express": "^4.21.2",
     "openid-client": "^6.8.8",
