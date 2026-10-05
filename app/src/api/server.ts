@@ -16,6 +16,21 @@ import { assertTenantMatches } from "./tenantBinding";
 import { createAuthRouter } from "./authRoutes";
 import { sessionAuthenticator } from "./sessionAuthenticator";
 
+// AUTHN-11 (CORS Restriction Requirement, docs/decisions/ratified.md):
+// reads a comma-separated allow-list of exact trusted browser origins from
+// CORS_TRUSTED_ORIGINS. Deliberately fails closed on anything not an exact
+// match — an unset/empty variable yields an empty list, which allows no
+// cross-origin browser request at all (never a wildcard fallback). No
+// production origin is hardcoded or guessed here; the local-development
+// value lives only in .env/.env.example as actual configuration.
+function parseCorsTrustedOrigins(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+}
+
 // API layer for the backend, consumed by the web UI under app/web (a
 // separate Vite dev server/origin — hence `cors()` below) and still
 // usable directly via curl/HTTP for manual exercise. There is NO
@@ -38,7 +53,28 @@ export function createApp(authenticator: Authenticator) {
   const app = express();
   app.locals.authenticator = authenticator;
 
-  app.use(cors());
+  // AUTHN-11: exact trusted-origin allow-list, not the previous wildcard
+  // default. credentials: true is required for the server-side session
+  // cookie (AUTHN-4) to be usable cross-origin at all. A request with no
+  // Origin header (curl, server-to-server, same-origin) is always let
+  // through unchanged — CORS is a browser-enforced mechanism only and
+  // must not become a second authentication/authorization gate; the
+  // existing session-cookie authentication middleware below remains the
+  // sole security boundary regardless of this outcome. A disallowed
+  // Origin receives no Access-Control-Allow-Origin (and, by the `cors`
+  // package's own callback semantics, no other CORS response header
+  // either) — it is never reflected and never satisfied by a wildcard.
+  const trustedOrigins = parseCorsTrustedOrigins(process.env.CORS_TRUSTED_ORIGINS);
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (trustedOrigins.includes(origin)) return callback(null, origin);
+        return callback(null, false);
+      },
+      credentials: true,
+    })
+  );
   app.use(express.json());
   // Malformed JSON ("entity.parse.failed" from body-parser) would
   // otherwise fall through to the generic 500 handler below; surface it
