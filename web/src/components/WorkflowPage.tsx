@@ -185,7 +185,7 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
                   onSubmit={(e) => {
                     e.preventDefault();
                     const qty = Number(selectedQuantity || currentDecision.selectedQuantity);
-                    runAction(() => api.reviseDecision(tenantId, currentDecision.id, { selectedQuantity: qty }));
+                    runAction(() => api.reviseDecision(tenantId, currentDecision.id, actorUserId, { selectedQuantity: qty }));
                   }}
                 >
                   <label>Revise selected quantity</label>

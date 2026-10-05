@@ -82,9 +82,20 @@ export async function formDecision(input: FormDecisionInput) {
 }
 
 // Pre-freeze revision only (CR-C Stage 1). Rejects once FROZEN.
+//
+// Unlike formDecision/freezeDecisionPackage/approve/createPurchaseOrderFromApproval,
+// this function previously accepted no actor identity at all and performed no
+// actor/tenant-membership check — a real implementation defect (every other
+// mutating operation in this codebase at minimum verifies the acting user
+// exists within the claimed tenant). actingUserId is now required and is
+// checked with the same bare existence-in-tenant pattern formDecision already
+// uses above (not the role-gated assertActorAuthorized pattern used by
+// freeze/approve/PO creation — revision, like formDecision, is not role-gated
+// in V1; see README "Authorization" limitations).
 export interface ReviseDecisionInput {
   tenantId: string;
   decisionPackageId: string;
+  actingUserId: string;
   selectedQuantity?: string | number;
   unitPrice?: string | number;
 }
@@ -95,6 +106,12 @@ export async function reviseDecision(input: ReviseDecisionInput) {
   }
   const tenantId = requireId(input.tenantId, "tenantId");
   const decisionPackageId = requireId(input.decisionPackageId, "decisionPackageId");
+  const actingUserId = requireId(input.actingUserId, "actingUserId");
+
+  const actingUser = await prisma.user.findFirst({ where: { id: actingUserId, tenantId } });
+  if (!actingUser) {
+    throw new NotFoundError("User", actingUserId);
+  }
 
   const existing = await prisma.decisionPackage.findFirst({
     where: { id: decisionPackageId, tenantId },

@@ -373,7 +373,12 @@ describe("Adversarial / hardening tests", () => {
     it("rejects revising a DecisionPackage after it has been frozen", async () => {
       const frozen = await buildFrozenDecision(90);
       await expect(
-        decisionService.reviseDecision({ tenantId, decisionPackageId: frozen.id, selectedQuantity: 50 })
+        decisionService.reviseDecision({
+          tenantId,
+          decisionPackageId: frozen.id,
+          actingUserId: procurementUserId,
+          selectedQuantity: 50,
+        })
       ).rejects.toThrow(InvalidStateError);
       // and the frozen content must be unchanged
       const reread = await prisma.decisionPackage.findUniqueOrThrow({ where: { id: frozen.id } });
@@ -1047,6 +1052,91 @@ describe("Adversarial / hardening tests", () => {
     // simultaneous callers), connection-pool exhaustion behavior, and
     // long-running-transaction lock contention are NOT verified here.
     // See "Concurrency findings" in the final report.
+  });
+
+  // ---------------------------------------------------------------
+  // Group 11 — reviseDecision actor/tenant-membership enforcement (AUTH-4)
+  // ---------------------------------------------------------------
+  // reviseDecision previously accepted no actor identity at all and
+  // performed no check — unlike every other mutating service in this
+  // codebase, which at minimum verifies the acting user exists within the
+  // claimed tenant. These tests prove the fix follows the same bare
+  // existence-in-tenant pattern formDecision already uses (not the
+  // role-gated assertActorAuthorized pattern used by freeze/approve/PO
+  // creation — revision remains unrestricted by role in V1).
+  describe("Group 11 — reviseDecision actor/tenant-membership enforcement (AUTH-4)", () => {
+    async function buildDraftDecision(selectedQuantity = 90) {
+      const se = await sourcingService.createSourcingEvent(tenantId, await freshLineId());
+      const quote = await quoteService.submitQuote({
+        tenantId,
+        sourcingEventId: se.id,
+        supplierId: supplierAId,
+        productId: productAId,
+        quotedQuantity: 100,
+        unit: "EA",
+        unitPrice: 10,
+        currency: "EUR",
+      });
+      return decisionService.formDecision({
+        tenantId,
+        sourcingEventId: se.id,
+        sourceQuoteVersionId: quote.versions[0].id,
+        selectedQuantity,
+        createdById: procurementUserId,
+      });
+    }
+
+    it("a valid actor belonging to the tenant can revise a DRAFT DecisionPackage", async () => {
+      const draft = await buildDraftDecision(90);
+      const revised = await decisionService.reviseDecision({
+        tenantId,
+        decisionPackageId: draft.id,
+        actingUserId: procurementUserId,
+        selectedQuantity: 70,
+      });
+      expect(Number(revised.selectedQuantity)).toBe(70);
+    });
+
+    it("an actor belonging to another tenant cannot revise it, even with a real (valid-elsewhere) user id", async () => {
+      const draft = await buildDraftDecision(90);
+      await expect(
+        decisionService.reviseDecision({
+          tenantId,
+          decisionPackageId: draft.id,
+          actingUserId: otherTenantUserId, // real User row, but tenantId = otherTenantId
+          selectedQuantity: 70,
+        })
+      ).rejects.toThrow(NotFoundError);
+
+      const reread = await prisma.decisionPackage.findUniqueOrThrow({ where: { id: draft.id } });
+      expect(Number(reread.selectedQuantity)).toBe(90);
+    });
+
+    it("an unknown actor cannot revise it", async () => {
+      const draft = await buildDraftDecision(90);
+      await expect(
+        decisionService.reviseDecision({
+          tenantId,
+          decisionPackageId: draft.id,
+          actingUserId: randomUUID(),
+          selectedQuantity: 70,
+        })
+      ).rejects.toThrow(NotFoundError);
+
+      const reread = await prisma.decisionPackage.findUniqueOrThrow({ where: { id: draft.id } });
+      expect(Number(reread.selectedQuantity)).toBe(90);
+    });
+
+    it("a missing actingUserId is rejected with ValidationError, not silently allowed", async () => {
+      const draft = await buildDraftDecision(90);
+      await expect(
+        decisionService.reviseDecision({
+          tenantId,
+          decisionPackageId: draft.id,
+          selectedQuantity: 70,
+        } as unknown as decisionService.ReviseDecisionInput)
+      ).rejects.toThrow(ValidationError);
+    });
   });
 
   // ---------------------------------------------------------------

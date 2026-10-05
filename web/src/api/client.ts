@@ -107,8 +107,9 @@ export const api = {
   reviseDecision: (
     tenantId: string,
     decisionPackageId: string,
+    actingUserId: string,
     input: { selectedQuantity?: number; unitPrice?: number }
-  ) => patch<DecisionPackage>(`/decisions/${decisionPackageId}`, { tenantId, ...input }),
+  ) => patch<DecisionPackage>(`/decisions/${decisionPackageId}`, { tenantId, actingUserId, ...input }),
 
   freezeDecision: (tenantId: string, decisionPackageId: string, actingUserId: string) =>
     post<DecisionPackage>(`/decisions/${decisionPackageId}/freeze`, { tenantId, actingUserId }),
