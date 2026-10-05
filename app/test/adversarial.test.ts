@@ -8,7 +8,8 @@ import * as recommendationService from "../src/services/recommendationService";
 import * as decisionService from "../src/services/decisionService";
 import * as approvalService from "../src/services/approvalService";
 import * as purchaseOrderService from "../src/services/purchaseOrderService";
-import { app } from "../src/api/server";
+import { createApp } from "../src/api/server";
+import { testAuthenticator, TEST_USER_ID_HEADER, TEST_TENANT_ID_HEADER } from "./support/testAuthenticator";
 import {
   ValidationError,
   NotFoundError,
@@ -35,11 +36,57 @@ import { createServer, type Server } from "node:http";
 let httpServer: Server;
 let baseUrl: string;
 
-async function httpPost(path: string, body: unknown, rawBody?: string) {
+// Set once in beforeAll, once the suite's own fixture tenant/user exist —
+// the default identity every httpPost/httpGet call authenticates as unless
+// a caller explicitly overrides `headers` (an explicit `null` sends no
+// auth headers at all, for unauthenticated-request tests; an explicit
+// object sends exactly those headers, for other-principal tests).
+let defaultTestAuthHeaders: Record<string, string> | null = null;
+
+function resolveAuthHeaders(headers: Record<string, string> | null | undefined): Record<string, string> {
+  if (headers === null) return {};
+  return headers ?? defaultTestAuthHeaders ?? {};
+}
+
+async function httpPost(
+  path: string,
+  body: unknown,
+  rawBody?: string,
+  headers?: Record<string, string> | null
+) {
   const res = await fetch(`${baseUrl}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...resolveAuthHeaders(headers) },
     body: rawBody !== undefined ? rawBody : body === undefined ? undefined : JSON.stringify(body),
+  });
+  let json: unknown = null;
+  try {
+    json = await res.json();
+  } catch {
+    // no body / not JSON
+  }
+  return { status: res.status, json };
+}
+
+async function httpGet(path: string, headers?: Record<string, string> | null) {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: "GET",
+    headers: resolveAuthHeaders(headers),
+  });
+  let json: unknown = null;
+  try {
+    json = await res.json();
+  } catch {
+    // no body / not JSON
+  }
+  return { status: res.status, json };
+}
+
+async function httpPatch(path: string, body: unknown, headers?: Record<string, string> | null) {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...resolveAuthHeaders(headers) },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   let json: unknown = null;
   try {
@@ -64,7 +111,7 @@ describe("Adversarial / hardening tests", () => {
 
   beforeAll(async () => {
     await new Promise<void>((resolve) => {
-      httpServer = createServer(app);
+      httpServer = createServer(createApp(testAuthenticator));
       httpServer.listen(0, () => {
         const address = httpServer.address();
         const port = typeof address === "object" && address ? address.port : 0;
@@ -90,6 +137,11 @@ describe("Adversarial / hardening tests", () => {
     productBId = (await prisma.product.create({ data: { tenantId, name: "Adversarial Product B", sku: "ADV-B" } })).id;
     supplierAId = (await prisma.supplier.create({ data: { tenantId, name: "Adversarial Supplier A" } })).id;
     supplierBId = (await prisma.supplier.create({ data: { tenantId, name: "Adversarial Supplier B" } })).id;
+
+    defaultTestAuthHeaders = {
+      [TEST_USER_ID_HEADER]: procurementUserId,
+      [TEST_TENANT_ID_HEADER]: tenantId,
+    };
 
     const request = await requestService.createRequest({
       tenantId,
@@ -121,15 +173,22 @@ describe("Adversarial / hardening tests", () => {
   // Group 1 — Input validation
   // ---------------------------------------------------------------
   describe("Group 1 — input validation", () => {
-    it("rejects empty body on POST /requests with 400, not 500", async () => {
+    it("rejects empty body on POST /requests cleanly, not with 500", async () => {
+      // AUTH-5: tenant binding (assertTenantMatches) now runs at the API
+      // boundary before the body ever reaches requestService's own field
+      // validation, so a body with no tenantId at all fails as
+      // TenantMismatchError (404) rather than requestService's
+      // ValidationError (400) — still a clean, typed 4xx, never a 500.
       const res = await httpPost("/requests", {});
-      expect(res.status).toBe(400);
-      expect(res.json).toMatchObject({ error: "ValidationError" });
+      expect(res.status).toBe(404);
+      expect(res.json).toMatchObject({ error: "TenantMismatchError" });
     });
 
-    it("rejects a completely missing body with 400", async () => {
+    it("rejects a completely missing body cleanly, not with 500", async () => {
+      // AUTH-5: see note above — no tenantId at all fails tenant binding
+      // first (404), before requestService's own validation would run.
       const res = await httpPost("/requests", undefined);
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(404);
     });
 
     it("rejects malformed (non-JSON) body with 400, not 500", async () => {
@@ -137,9 +196,11 @@ describe("Adversarial / hardening tests", () => {
       expect(res.status).toBe(400);
     });
 
-    it("rejects null body fields", async () => {
+    it("rejects null body fields cleanly, not with 500", async () => {
+      // AUTH-5: tenantId: null fails tenant binding before requestService's
+      // own validation ever runs — still a clean 4xx, not a 500.
       const res = await httpPost("/requests", { tenantId: null, createdById: null, lines: [] });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(404);
     });
 
     it("rejects wrong JSON types (lines as a string instead of an array)", async () => {
@@ -1162,6 +1223,310 @@ describe("Adversarial / hardening tests", () => {
         expect(typeof (res.json as { message: unknown }).message).toBe("string");
         expect((res.json as { message: string }).message).not.toMatch(/at Object\.|at Module\._compile|node_modules/);
       }
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Group 13 — Authentication boundary (AUTH-1/2/3/5/6 planning, Step 4)
+  // ---------------------------------------------------------------
+  // Scope note: this step establishes AUTHENTICATION only — every HTTP
+  // route now requires a known Principal, via the test authenticator
+  // configured in beforeAll. It deliberately does NOT yet verify that a
+  // request's claimed tenantId matches the authenticated principal's own
+  // tenantId (that is tenantBinding.ts, wired in a later step), and it
+  // does NOT yet replace body-supplied actingUserId/approvedById/
+  // createdById with the principal (also a later step) — those routes'
+  // existing, unchanged behavior is already covered by every test above
+  // this group, which all now implicitly prove "authenticated as the
+  // default test principal, behaves exactly as before."
+  describe("Group 13 — authentication boundary", () => {
+    it("A (read): an unauthenticated GET /tenants is rejected with 401, not served", async () => {
+      const res = await httpGet("/tenants", null);
+      expect(res.status).toBe(401);
+      expect(res.json).toMatchObject({ error: "Unauthenticated" });
+      expect((res.json as { message: string }).message).not.toMatch(/at Object\.|at Module\._compile|node_modules/);
+    });
+
+    it("A (write): an unauthenticated POST /requests is rejected with 401, not forwarded to the route", async () => {
+      const res = await httpPost(
+        "/requests",
+        { tenantId, createdById: procurementUserId, lines: [{ productId: productAId, requestedQuantity: 1, unit: "EA" }] },
+        undefined,
+        null
+      );
+      expect(res.status).toBe(401);
+      expect(res.json).toMatchObject({ error: "Unauthenticated" });
+    });
+
+    it("B: an authenticated request with a valid test Principal reaches the existing route and behaves exactly as before", async () => {
+      const res = await httpGet("/tenants");
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.json)).toBe(true);
+    });
+
+    it("C: a Principal belonging to another tenant cannot claim this tenant — updated by AUTH-5 (Step 5): tenant binding is now enforced, where Step 4 deliberately left it open", async () => {
+      // Superseded by Step 5: this test originally proved only that
+      // authentication succeeded regardless of the claimed tenant (the
+      // explicit gap Step 4 documented as "not yet implemented"). Now that
+      // assertTenantMatches is wired into this route, authenticating as
+      // otherTenantId's user while claiming tenantId must be rejected.
+      const res = await httpGet(`/requests?tenantId=${tenantId}`, {
+        [TEST_USER_ID_HEADER]: otherTenantUserId,
+        [TEST_TENANT_ID_HEADER]: otherTenantId,
+      });
+      expect(res.status).toBe(404);
+      expect(res.json).toMatchObject({ error: "TenantMismatchError" });
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Group 14 — Tenant binding + trusted actor identity (AUTH-5)
+  // ---------------------------------------------------------------
+  // Closes the two gaps Group 13 (Step 4) explicitly left open: (1) a
+  // request's claimed tenantId is now verified against the authenticated
+  // principal's own tenantId via assertTenantMatches, at the API boundary,
+  // before any service is called; (2) actingUserId/approvedById/createdById
+  // are no longer read from the request body as the source of truth — the
+  // route derives them from req.principal instead, so a spoofed body value
+  // has no effect, verified below via persisted attribution (createdById)
+  // or authorization behavior (role checks binding to the true principal),
+  // per which of the two actually applies to each route.
+  describe("Group 14 — tenant binding + trusted actor identity (AUTH-5)", () => {
+    describe("Tenant binding", () => {
+      it("authenticated principal with a matching claimed tenantId succeeds", async () => {
+        const res = await httpGet(`/tenants/${tenantId}/context`);
+        expect(res.status).toBe(200);
+      });
+
+      it("authenticated principal from another tenant claiming this tenant is rejected (read, GET /tenants/:id/context)", async () => {
+        const res = await httpGet(`/tenants/${tenantId}/context`, {
+          [TEST_USER_ID_HEADER]: otherTenantUserId,
+          [TEST_TENANT_ID_HEADER]: otherTenantId,
+        });
+        expect(res.status).toBe(404);
+        expect(res.json).toMatchObject({ error: "TenantMismatchError" });
+      });
+
+      it("a cross-tenant read (another tenant's Principal) via GET /request-lines/:id/workflow is rejected", async () => {
+        const res = await httpGet(`/request-lines/${requestLineId}/workflow?tenantId=${tenantId}`, {
+          [TEST_USER_ID_HEADER]: otherTenantUserId,
+          [TEST_TENANT_ID_HEADER]: otherTenantId,
+        });
+        expect(res.status).toBe(404);
+        expect(res.json).toMatchObject({ error: "TenantMismatchError" });
+      });
+
+      it("a cross-tenant write (another tenant's Principal) via POST /sourcing-events is rejected, and nothing is created", async () => {
+        const line = await freshLineId();
+        const res = await httpPost("/sourcing-events", { tenantId, requestLineId: line }, undefined, {
+          [TEST_USER_ID_HEADER]: otherTenantUserId,
+          [TEST_TENANT_ID_HEADER]: otherTenantId,
+        });
+        expect(res.status).toBe(404);
+        expect(res.json).toMatchObject({ error: "TenantMismatchError" });
+        const count = await prisma.sourcingEvent.count({ where: { requestLineId: line } });
+        expect(count).toBe(0);
+      });
+    });
+
+    describe("Actor identity spoofing", () => {
+      it("createdById spoofing: POST /requests ignores a body-supplied createdById and attributes to the authenticated principal", async () => {
+        const res = await httpPost("/requests", {
+          tenantId,
+          createdById: approverUserId, // spoof attempt: a different real user, same tenant
+          lines: [{ productId: productAId, requestedQuantity: 1, unit: "EA" }],
+        }); // default headers authenticate as procurementUserId
+        expect(res.status).toBe(200);
+        expect((res.json as { createdById: string }).createdById).toBe(procurementUserId);
+        expect((res.json as { createdById: string }).createdById).not.toBe(approverUserId);
+      });
+
+      it("createdById spoofing: POST /decisions ignores a body-supplied createdById and attributes to the authenticated principal", async () => {
+        const se = await sourcingService.createSourcingEvent(tenantId, await freshLineId());
+        const quote = await quoteService.submitQuote({
+          tenantId,
+          sourcingEventId: se.id,
+          supplierId: supplierAId,
+          productId: productAId,
+          quotedQuantity: 10,
+          unit: "EA",
+          unitPrice: 10,
+          currency: "EUR",
+        });
+        const res = await httpPost("/decisions", {
+          tenantId,
+          sourcingEventId: se.id,
+          sourceQuoteVersionId: quote.versions[0].id,
+          selectedQuantity: 5,
+          createdById: approverUserId, // spoof attempt
+        });
+        expect(res.status).toBe(200);
+        expect((res.json as { createdById: string }).createdById).toBe(procurementUserId);
+      });
+
+      it("approvedById spoofing: a non-approver authenticated principal cannot approve by spoofing a real approver's id in the body", async () => {
+        const se = await sourcingService.createSourcingEvent(tenantId, await freshLineId());
+        const quote = await quoteService.submitQuote({
+          tenantId,
+          sourcingEventId: se.id,
+          supplierId: supplierAId,
+          productId: productAId,
+          quotedQuantity: 10,
+          unit: "EA",
+          unitPrice: 10,
+          currency: "EUR",
+        });
+        const draft = await decisionService.formDecision({
+          tenantId,
+          sourcingEventId: se.id,
+          sourceQuoteVersionId: quote.versions[0].id,
+          selectedQuantity: 5,
+          createdById: procurementUserId,
+        });
+        const frozen = await decisionService.freezeDecisionPackage(tenantId, draft.id, procurementUserId);
+
+        const res = await httpPost("/approvals", {
+          tenantId,
+          decisionPackageId: frozen.id,
+          approvedById: approverUserId, // spoof attempt: a real approver, not the caller
+        }); // default headers authenticate as procurementUserId (role=procurement_user)
+        expect(res.status).toBe(403);
+        expect(res.json).toMatchObject({ error: "AuthorizationError" });
+
+        const count = await prisma.approval.count({ where: { decisionPackageId: frozen.id } });
+        expect(count).toBe(0);
+      });
+
+      it("approvedById spoofing: when an authenticated approver DOES approve, the persisted approvedById is the principal, not any spoofed body value", async () => {
+        const se = await sourcingService.createSourcingEvent(tenantId, await freshLineId());
+        const quote = await quoteService.submitQuote({
+          tenantId,
+          sourcingEventId: se.id,
+          supplierId: supplierAId,
+          productId: productAId,
+          quotedQuantity: 10,
+          unit: "EA",
+          unitPrice: 10,
+          currency: "EUR",
+        });
+        const draft = await decisionService.formDecision({
+          tenantId,
+          sourcingEventId: se.id,
+          sourceQuoteVersionId: quote.versions[0].id,
+          selectedQuantity: 5,
+          createdById: procurementUserId,
+        });
+        const frozen = await decisionService.freezeDecisionPackage(tenantId, draft.id, procurementUserId);
+
+        const res = await httpPost(
+          "/approvals",
+          { tenantId, decisionPackageId: frozen.id, approvedById: procurementUserId }, // spoof attempt
+          undefined,
+          { [TEST_USER_ID_HEADER]: approverUserId, [TEST_TENANT_ID_HEADER]: tenantId } // authenticated as the real approver
+        );
+        expect(res.status).toBe(200);
+        expect((res.json as { approvedById: string }).approvedById).toBe(approverUserId);
+        expect((res.json as { approvedById: string }).approvedById).not.toBe(procurementUserId);
+      });
+
+      it("actingUserId spoofing: PATCH /decisions/:id ignores a body-supplied actingUserId (even a real user in a different tenant) and succeeds via the authenticated principal instead", async () => {
+        const se = await sourcingService.createSourcingEvent(tenantId, await freshLineId());
+        const quote = await quoteService.submitQuote({
+          tenantId,
+          sourcingEventId: se.id,
+          supplierId: supplierAId,
+          productId: productAId,
+          quotedQuantity: 10,
+          unit: "EA",
+          unitPrice: 10,
+          currency: "EUR",
+        });
+        const draft = await decisionService.formDecision({
+          tenantId,
+          sourcingEventId: se.id,
+          sourceQuoteVersionId: quote.versions[0].id,
+          selectedQuantity: 5,
+          createdById: procurementUserId,
+        });
+
+        const res = await httpPatch(`/decisions/${draft.id}`, {
+          tenantId,
+          actingUserId: otherTenantUserId, // spoof attempt: real user, wrong tenant — would fail AUTH-4's own check if actually used
+          selectedQuantity: 3,
+        }); // default headers authenticate as procurementUserId
+        expect(res.status).toBe(200);
+        expect(Number((res.json as { selectedQuantity: string }).selectedQuantity)).toBe(3);
+      });
+
+      it("actingUserId spoofing: a principal with neither allowed role cannot freeze by spoofing a valid user's id in the body", async () => {
+        const weirdRoleUser = await prisma.user.create({ data: { tenantId, name: "AUTH-5 Weird Role (freeze)", role: "banana" } });
+        const se = await sourcingService.createSourcingEvent(tenantId, await freshLineId());
+        const quote = await quoteService.submitQuote({
+          tenantId,
+          sourcingEventId: se.id,
+          supplierId: supplierAId,
+          productId: productAId,
+          quotedQuantity: 10,
+          unit: "EA",
+          unitPrice: 10,
+          currency: "EUR",
+        });
+        const draft = await decisionService.formDecision({
+          tenantId,
+          sourcingEventId: se.id,
+          sourceQuoteVersionId: quote.versions[0].id,
+          selectedQuantity: 5,
+          createdById: procurementUserId,
+        });
+
+        const res = await httpPost(
+          `/decisions/${draft.id}/freeze`,
+          { tenantId, actingUserId: procurementUserId }, // spoof attempt: a real, allowed-role user
+          undefined,
+          { [TEST_USER_ID_HEADER]: weirdRoleUser.id, [TEST_TENANT_ID_HEADER]: tenantId }
+        );
+        expect(res.status).toBe(403);
+        expect(res.json).toMatchObject({ error: "AuthorizationError" });
+
+        const reread = await prisma.decisionPackage.findUniqueOrThrow({ where: { id: draft.id } });
+        expect(reread.status).toBe("DRAFT");
+      });
+
+      it("actingUserId spoofing: a principal with neither allowed role cannot create a PurchaseOrder by spoofing a valid user's id in the body", async () => {
+        const weirdRoleUser = await prisma.user.create({ data: { tenantId, name: "AUTH-5 Weird Role (PO)", role: "banana" } });
+        const se = await sourcingService.createSourcingEvent(tenantId, await freshLineId());
+        const quote = await quoteService.submitQuote({
+          tenantId,
+          sourcingEventId: se.id,
+          supplierId: supplierAId,
+          productId: productAId,
+          quotedQuantity: 10,
+          unit: "EA",
+          unitPrice: 10,
+          currency: "EUR",
+        });
+        const draft = await decisionService.formDecision({
+          tenantId,
+          sourcingEventId: se.id,
+          sourceQuoteVersionId: quote.versions[0].id,
+          selectedQuantity: 5,
+          createdById: procurementUserId,
+        });
+        const frozen = await decisionService.freezeDecisionPackage(tenantId, draft.id, procurementUserId);
+        const approval = await approvalService.approve(tenantId, frozen.id, approverUserId);
+
+        const res = await httpPost(
+          "/purchase-orders",
+          { tenantId, approvalId: approval.id, actingUserId: procurementUserId }, // spoof attempt
+          undefined,
+          { [TEST_USER_ID_HEADER]: weirdRoleUser.id, [TEST_TENANT_ID_HEADER]: tenantId }
+        );
+        expect(res.status).toBe(403);
+        expect(res.json).toMatchObject({ error: "AuthorizationError" });
+
+        const po = await prisma.purchaseOrder.findUnique({ where: { approvalId: approval.id } });
+        expect(po).toBeNull();
+      });
     });
   });
 });
