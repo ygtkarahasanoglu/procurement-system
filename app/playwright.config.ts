@@ -11,11 +11,5 @@ export default defineConfig({
   use: {
     baseURL: process.env.UI_BASE_URL ?? "http://localhost:5173",
     headless: true,
-    launchOptions: {
-      // This environment pins an older pre-installed Chromium revision
-      // than the @playwright/test version installed above expects by
-      // default; point at it explicitly rather than downloading a new one.
-      executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
-    },
   },
 });
