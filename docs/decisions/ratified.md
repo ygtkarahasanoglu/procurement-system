@@ -1401,3 +1401,277 @@ as deciding:
     design for satisfying CT-A2 is not decided or implied.
 
 None of these items is closed, narrowed, or resolved by CT-A2.
+
+## Human Authentication Architecture Decisions (AUTHN-1–AUTHN-11)
+
+**Naming note:** this family establishes a new grouped prefix, `AUTHN-`
+(Authentication), distinct from both the existing `Authority`/`Authorization`
+vocabulary (`C`, `B2`, `U3`) and from the informal `AUTH-1` through `AUTH-6`
+labels already used in this repository's commit messages
+(`87f6e2c`, `3343b40`, `58441f1`) to describe sequential *implementation
+phases* of the API's authentication boundary. Those labels name engineering
+work phases, not ratified decisions, and are not redefined, superseded, or
+referenced by this entry beyond this disambiguation note — `AUTHN-` is
+chosen specifically so a future reader is never left to guess whether
+"AUTH-4" means the fourth implementation step or a ratified decision ID.
+This follows the same disambiguation discipline already established by
+`CR-D2` (distinguishing itself from the unrelated `D5-R` cancellation
+family and from its own human-assigned `D5-A` working label).
+
+This family records the ratified **architecture** for human-facing
+authentication. It does not itself implement anything — see each entry's
+explicit non-decisions, and the closing "Decision Status" note below.
+
+### AUTHN-1 — Human Authentication Architecture: OIDC → Session → Principal
+
+**Statement:** For human-facing product channels, authentication is based
+on standard OpenID Connect (OIDC). The ratified architecture is:
+
+```
+External OIDC identity
+  → server-side session
+  → existing Principal { userId, tenantId }
+  → Procurement API
+  → existing tenant binding / authorization
+  → Procurement Core
+```
+
+The pilot may authenticate against a personal Google or personal
+Microsoft account. No corporate Microsoft Entra ID tenant or Google
+Workspace domain will be established solely for the pilot. The OIDC
+implementation must be generic at the protocol/claims boundary and must
+not be special-cased to "personal Gmail," "personal Outlook," or any
+other Google-specific or Microsoft-specific account semantics.
+
+**Scope:** Establishes only the authentication architecture shape above
+and the pilot's permitted identity source. Does not modify `Principal`
+(see `AUTHN-6`), `assertTenantMatches`, or `domain/authorization.ts` (see
+`AUTHN-7`) in any way.
+
+**Explicit non-decisions:** Provider selection (Google vs. Microsoft, or
+any other OIDC-conformant provider) is **not** ratified here — it remains
+a separate, provider-specific implementation sub-decision. This entry
+does not ratify multi-provider support, per-tenant issuer configuration,
+or any specific OIDC library/SDK.
+
+**Evidence:** explicit human ratification, from the independent
+authentication-technology assessment conducted after AUTH-1–6
+(commit `58441f1`) and the subsequent business-context re-assessment
+(single pilot user, personal account, planned chatbot/ERP/hybrid product
+channels).
+
+### AUTHN-2 — External Identity Key: (issuer, subject)
+
+**Statement:** The external identity mapping is conceptually keyed by
+`(issuer, subject) → User.id` — never by `subject` alone.
+
+**Scope:** This is a forward-compatible identity-key principle only. It
+does **not** ratify multi-provider support, per-tenant multi-issuer
+support, or any specific mapping storage mechanism for the current
+implementation. The existing internal identity chain is unchanged:
+`User.id → User.tenantId → Principal { userId, tenantId }`.
+
+**Explicit non-decisions:** Schema/table design for the mapping, whether
+it lives on `User` or a separate table, and provisioning mechanics (see
+`AUTHN-5`) are not decided here.
+
+### AUTHN-3 — OIDC Flow and Excluded Mechanisms
+
+**Statement:** The ratified flow is Authorization Code + PKCE. No
+JWT-based application session is ratified. No custom username/password
+authentication is ratified. No self-service signup is ratified. No
+just-in-time (JIT) user provisioning is ratified.
+
+**Scope:** Establishes the flow and excludes the four listed alternative
+mechanisms for this architecture. Does not evaluate or rule out JWTs,
+passwords, signup, or JIT provisioning for any *other*, separately
+ratified, future context (e.g., `AUTHN-8`'s machine-identity class,
+which is explicitly its own future decision).
+
+### AUTHN-4 — Session Model
+
+**Statement:** A server-side session is used. For the pilot, session
+state is persisted in PostgreSQL, because PostgreSQL already exists as
+the application's persistence infrastructure. Redis is not introduced
+for the pilot. The browser receives a session cookie that is `httpOnly`,
+`Secure`, and carries a deployment-appropriate `SameSite` policy.
+
+**Explicit non-decisions:** The exact `SameSite` value is **not** decided
+here — it is deployment/topology-dependent and is deferred to
+implementation/deployment configuration. In particular, this entry does
+**not** ratify that distinct frontend/API origins automatically require
+`SameSite=None`. Redis is not ruled out permanently — only not introduced
+for the pilot; adopting it later is a separate, not-yet-needed decision.
+
+### AUTHN-5 — User Provisioning
+
+**Statement:** Users are pre-provisioned. An external OIDC identity maps
+to an existing `User` record. No JIT user creation is ratified. No
+self-service registration is ratified. No provisioning UI is required to
+satisfy this authentication architecture.
+
+**Scope:** The existing single-tenant `User.tenantId` model is unchanged
+by this decision.
+
+**Explicit non-decisions:** The exact provisioning mechanism (manual/seed
+script, an admin-only endpoint, or an invitation flow) is not decided
+here — only that it is pre-provisioned, not JIT and not self-service.
+
+### AUTHN-6 — Principal Contract Remains Unextended
+
+**Statement:** The existing `Principal` contract remains authoritative
+and unchanged:
+
+```ts
+Principal {
+  userId: string;
+  tenantId: string;
+}
+```
+
+Channel identity, machine identity, OIDC provider fields, external
+subject fields, Execution Authority, and ERP credentials must **not** be
+added to `Principal` as part of this decision family.
+
+**Scope:** This is a guardrail against scope creep into `Principal`
+specifically, consistent with `U3`'s existing guardrails against a
+universal Authority/identity abstraction. It does not foreclose any of
+the excluded concepts existing elsewhere in the system under their own,
+separately ratified, future representations (see `AUTHN-8`).
+
+### AUTHN-7 — Authentication / Principal / Authorization / Tenant Binding Remain Separate Layers
+
+**Statement:** The following layers are ratified as distinct and must not
+be collapsed into one another:
+
+- **Authentication** answers "who is this human?"
+- **Principal resolution** answers "which internal `User` and tenant does
+  this identity represent?" — the existing `Principal` contract.
+- **Existing domain authorization** (`domain/authorization.ts`) answers
+  "can this `User` perform this operation?"
+- **Existing tenant binding** (`assertTenantMatches`) answers "does the
+  requested tenant belong to this authenticated Principal?"
+
+**Scope:** This restates, for the authentication layer specifically, the
+separation already established by `C` ("Authority and Capability are
+separate... Authentication is also distinct from all of the above") and
+by AUTH-1–6's existing implementation. It does not modify
+`domain/authorization.ts`, `assertTenantMatches`, or any existing
+service/domain authorization semantics.
+
+**Explicit non-decisions:** **Execution Authority** (`B2`) is correctly
+named as a conceptually distinct, already-ratified layer — "can this
+action actually be executed?" — but remains **entirely unimplemented**
+in the codebase, both before and after this ratification. Nothing in
+this decision family implements, narrows, or resolves Execution
+Authority; it must not be read as having done so merely because this
+architecture is now ratified.
+
+### AUTHN-8 — ERP Machine Identity Is a Separate Future Class
+
+**Statement:** ERP integration is explicitly a separate, future identity
+class. ERP authentication will eventually use a machine-to-machine
+credential model with its own tenant-binding and authorization mechanism.
+ERP machine identity:
+
+- is **not** a `Principal`;
+- is **not** a `User`;
+- does **not** use the human browser session;
+- does **not** automatically receive human authorization;
+- does **not** automatically receive Execution Authority;
+- does **not** replace human authorization for consequential actions
+  (freeze, Approval, PurchaseOrder creation), consistent with the
+  existing ratified default that RFQ/PO/ERP writes are human-authorized
+  absent a separate explicit ratification.
+
+**Scope:** Establishes only the boundary above. No ERP authentication
+implementation, no ERP identity entity, and no ERP authorization model
+are designed or ratified here.
+
+**Relationship to existing ratified decisions:** Consistent with, and
+does not modify, `R4` (Core holds commercial authority, ERP holds
+transaction/fulfillment authority), `B2`, `C`, and `U3`.
+
+### AUTHN-9 — Product Channels Are Not Separate Core Authorization Models
+
+**Statement:** The product's three planned usage modes — chatbot-only,
+ERP-only, and hybrid — are product/channel modes, not three different
+Procurement Core authorization models. For human-originated actions
+across any channel, Procurement Core continues to receive the same
+`Principal` contract. Chat/voice is a transport/UI channel, not an
+identity class. ERP is the future machine identity class defined in
+`AUTHN-8`, not a human `Principal`.
+
+**Scope:** Establishes only this framing. Does not design any
+chatbot-specific identity model, voice authentication, or AI
+authorization model.
+
+### AUTHN-10 — GET /tenants Security-Boundary Correction Requirement
+
+**Statement:** Once real authentication is introduced, `GET /tenants`
+must not expose all tenants to an authenticated user. The endpoint must
+be scoped to the authenticated Principal's own tenant
+(`principal.tenantId`).
+
+**Scope:** This is a narrow authentication/security-boundary correction,
+not a domain redesign, and must be included in the same change that
+introduces real authentication — not before (today's fail-closed
+composition root makes it unreachable) and not deferred after (the
+moment real authentication exists, the gap becomes live).
+
+**Explicit non-decisions:** This does not resolve `GET /tenants`'
+broader, previously-flagged-OPEN product/contract question (what an
+authenticated principal should see beyond "their own tenant" in some
+future multi-tenant-membership world) — it resolves only the
+single-tenant-per-user case the current schema already represents.
+
+### AUTHN-11 — CORS Restriction Requirement
+
+**Statement:** Once real browser-based authentication is introduced,
+CORS must be restricted to the exact trusted frontend origin(s), with
+credentials enabled as required for the server-side session cookie.
+Wildcard origin access must not remain in production.
+
+**Explicit non-decisions:** The exact deployment topology and the
+cookie's `SameSite` setting (see `AUTHN-4`) remain implementation/
+deployment concerns, not decided here.
+
+### Minimal Implementation Boundary (descriptive, not itself a ratified sub-decision)
+
+The future implementation *may* include: a concrete `Authenticator`
+implementation under `app/src/api/`; OIDC login/callback/logout routes;
+PostgreSQL-backed session persistence; external identity → `User`
+mapping; replacement of the current fail-closed production authenticator;
+frontend credential transport using the server-side session; a real
+authenticated UI replacing the manual tenant/actor selection mechanism;
+restricted CORS (`AUTHN-11`); `GET /tenants` tenant scoping (`AUTHN-10`);
+and appropriate tests for authentication behavior.
+
+The following existing components remain unchanged by this decision
+family: the `Principal` contract (`AUTHN-6`), `assertTenantMatches`,
+`domain/authorization.ts`, existing service authorization semantics, and
+the AUTH-1–6 HTTP security matrix (`Group 15`, commit `58441f1`).
+
+### Non-Goals (explicitly not ratified by AUTHN-1–AUTHN-11)
+
+Multi-IdP implementation; per-tenant configurable OIDC issuers; JWT
+access/refresh tokens; custom password authentication; self-service
+signup; JIT provisioning; `R5` multi-tenant `User` membership; RBAC
+redesign; ERP machine authentication implementation; a chatbot-specific
+identity model; voice authentication; AI authorization redesign; Redis
+session infrastructure; a provisioning/admin UI; Execution Authority
+implementation; an ERP authorization model.
+
+### Decision Status
+
+Recorded as a **RATIFIED architecture decision** (`AUTHN-1`–`AUTHN-11`).
+This is a documentation-only ratification: no implementation layer
+described above — the `Authenticator`, session storage, identity
+mapping, login/callback/logout routes, frontend credential transport,
+`GET /tenants` scoping, or CORS restriction — exists in the codebase as
+of this ratification. The distinction between authentication, Principal
+resolution, tenant binding, authorization, Execution Authority, and
+future machine identity (`AUTHN-7`, `AUTHN-8`) must be preserved exactly
+as stated once implementation begins. The repository remains in an
+implementation-ready, not implementation-complete, state after this
+ratification.
