@@ -10,6 +10,7 @@
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:seed": "tsx src/seed/seed.ts",
+    "provision:pilot-identity": "tsx src/scripts/provisionExternalIdentity.ts",
     "test": "dotenv -e .env.test -- vitest run",
     "test:watch": "dotenv -e .env.test -- vitest",
     "test:e2e-ui": "playwright test"
