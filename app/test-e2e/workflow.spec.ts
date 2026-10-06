@@ -89,9 +89,8 @@ test.describe("Full procurement workflow via the browser", () => {
   }) => {
     await page.goto("/");
 
-    // --- Tenant / actor selection ---
-    await page.getByLabel("Tenant").selectOption({ label: TENANT_NAME });
-    await page.getByLabel("Acting as").selectOption({ label: "E2E Procurement User (procurement_user)" });
+    // No manual tenant/actor selection anymore — the authenticated session
+    // injected in beforeEach (procurement user) is the sole identity source.
 
     // --- 1. Create Request: Product A, 100 EA ---
     await page.getByLabel("Product").selectOption({ label: "Product A (E2E-PRODUCT-A)" });
@@ -143,11 +142,13 @@ test.describe("Full procurement workflow via the browser", () => {
     await expect(decisionSection.locator('input[type="number"]')).toHaveCount(0);
 
     // --- 8. Approval requires an approver actor; switch actor ---
-    await page.getByLabel("Acting as").selectOption({ label: "E2E Approver (approver)" });
-    // The manual "Acting as" selector only changes what the UI displays —
-    // every mutating route now derives the acting identity exclusively
-    // from req.principal (AUTH-5), so acting as the approver for real
-    // requires re-authenticating this browser session as that user too.
+    // There is no UI actor selector anymore — every mutating route derives
+    // the acting identity exclusively from req.principal (AUTH-5), so
+    // acting as the approver means re-authenticating this browser session
+    // as that user. The frontend's own identity state (read from /auth/me
+    // once on mount) is not refreshed by this — but since the backend
+    // never trusts a frontend-supplied actor field anyway, only the
+    // session cookie used for the actual Approve request matters.
     await authenticateAs(context, approverUserId);
     const approvalSection = page.locator("section.panel").filter({ hasText: "Approval" });
     await expect(approvalSection.locator(".value-card")).toContainText("90 EA"); // frozen decision shown before approving
@@ -170,8 +171,6 @@ test.describe("Full procurement workflow via the browser", () => {
 
   test("PO action is unavailable before an Approval exists", async ({ page }) => {
     await page.goto("/");
-    await page.getByLabel("Tenant").selectOption({ label: TENANT_NAME });
-    await page.getByLabel("Acting as").selectOption({ label: "E2E Procurement User (procurement_user)" });
 
     await page.getByLabel("Product").selectOption({ label: "Product A (E2E-PRODUCT-A)" });
     await page
@@ -195,8 +194,6 @@ test.describe("Full procurement workflow via the browser", () => {
 
   test("Backend errors are displayed cleanly, never as a stack trace", async ({ page }) => {
     await page.goto("/");
-    await page.getByLabel("Tenant").selectOption({ label: TENANT_NAME });
-    await page.getByLabel("Acting as").selectOption({ label: "E2E Procurement User (procurement_user)" });
 
     await page.getByRole("button", { name: "Create Request" }).click(); // no product selected
 

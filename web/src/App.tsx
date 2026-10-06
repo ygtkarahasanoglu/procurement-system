@@ -1,23 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, LOGIN_URL } from "./api/client";
 import type { Principal, ProcurementRequest, Product, Supplier } from "./api/types";
-import { TenantActorBar, type ActorSelection } from "./components/TenantActorBar";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { NewRequestForm } from "./components/NewRequestForm";
 import { RequestList } from "./components/RequestList";
 import { WorkflowPage } from "./components/WorkflowPage";
 import "./app.css";
 
-const STORAGE_KEY = "procurement-ui.actor-selection";
-
-// Minimal auth bootstrap (AUTHN, post Step-11): the backend now requires a
-// session cookie for every route except /auth/*, so the app must know
-// whether one exists before rendering anything that calls the API. This is
-// deliberately additive only — it does not touch, replace, or remove the
-// existing manual tenant/actor selection below; it only decides whether
-// that existing UI (or a minimal sign-in prompt) is shown. `principal` is
-// read once on mount and is not yet wired into the manual selection at
-// all — that remains a separate, later step.
+// Auth bootstrap (AUTHN, post Step-11): the backend requires a session
+// cookie for every route except /auth/*, so the app must know whether one
+// exists before rendering anything that calls the API. `principal` is read
+// once on mount and is the app's sole identity source — there is no manual
+// tenant/actor selection anymore (see AuthenticatedApp below).
 function useSessionBootstrap() {
   const [principal, setPrincipal] = useState<Principal | null>(null);
   const [checked, setChecked] = useState(false);
@@ -52,40 +46,34 @@ export default function App() {
     );
   }
 
-  return <AuthenticatedApp />;
+  return <AuthenticatedApp principal={principal} />;
 }
 
-function AuthenticatedApp() {
-  const [selection, setSelection] = useState<ActorSelection | null>(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? (JSON.parse(raw) as ActorSelection) : null;
-    } catch {
-      return null;
-    }
-  });
+// Tenant and acting-user identity come exclusively from the authenticated
+// Principal (AUTHN) — there is no manual tenant/actor selection and no
+// localStorage identity state. The backend already treats any
+// frontend-supplied tenantId/createdById/actingUserId/approvedById as
+// non-authoritative (tenantId is validated against req.principal via
+// assertTenantMatches; the actor fields are overridden with
+// req.principal!.userId outright) — this component simply sends the real
+// values instead of ones from a dropdown.
+function AuthenticatedApp({ principal }: { principal: Principal }) {
   const [products, setProducts] = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [requests, setRequests] = useState<ProcurementRequest[]>([]);
   const [openLineId, setOpenLineId] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
 
-  function handleSelectionChange(next: ActorSelection) {
-    setSelection(next);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  }
-
   const reloadTenantData = useCallback(() => {
-    if (!selection) return;
     api
-      .getTenantContext(selection.tenantId)
+      .getTenantContext(principal.tenantId)
       .then((ctx) => {
         setProducts(ctx.products);
         setSuppliers(ctx.suppliers);
       })
       .catch(setError);
-    api.listRequests(selection.tenantId).then(setRequests).catch(setError);
-  }, [selection]);
+    api.listRequests(principal.tenantId).then(setRequests).catch(setError);
+  }, [principal.tenantId]);
 
   useEffect(() => {
     reloadTenantData();
@@ -95,18 +83,15 @@ function AuthenticatedApp() {
     <div className="app">
       <header className="app-header">
         <h1>YGT Procurement — MVP Workspace</h1>
-        <TenantActorBar selection={selection} onChange={handleSelectionChange} />
       </header>
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
       <main className="app-main">
-        {!selection ? (
-          <p className="empty-state">Select a tenant and an actor above to begin.</p>
-        ) : openLineId ? (
+        {openLineId ? (
           <WorkflowPage
-            tenantId={selection.tenantId}
-            actorUserId={selection.actorUserId}
+            tenantId={principal.tenantId}
+            actorUserId={principal.userId}
             requestLineId={openLineId}
             products={products}
             suppliers={suppliers}
@@ -119,8 +104,8 @@ function AuthenticatedApp() {
         ) : (
           <>
             <NewRequestForm
-              tenantId={selection.tenantId}
-              actorUserId={selection.actorUserId}
+              tenantId={principal.tenantId}
+              actorUserId={principal.userId}
               products={products}
               onCreated={(lineId) => setOpenLineId(lineId)}
               onError={setError}
