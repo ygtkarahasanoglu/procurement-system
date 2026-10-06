@@ -1575,9 +1575,104 @@ satisfy this authentication architecture.
 **Scope:** The existing single-tenant `User.tenantId` model is unchanged
 by this decision.
 
-**Explicit non-decisions:** The exact provisioning mechanism (manual/seed
-script, an admin-only endpoint, or an invitation flow) is not decided
-here — only that it is pre-provisioned, not JIT and not self-service.
+**Production provisioning mechanism — ratified 2026-10-06:** Production
+user provisioning SHALL use explicit provisioning of an already-existing
+`User` by linking a verified external OIDC identity, represented by the
+existing `(issuer, subject)` pair, to that `User`. This operation
+preserves the security properties already established by `AUTHN-12` and
+the existing implementation:
+
+1. The target `User` MUST already exist.
+2. Provisioning MUST NOT create a `User` as a consequence of
+   authentication.
+3. JIT/self-registration is excluded.
+4. `(issuer, subject)` is the external identity key.
+5. Email MUST NOT be used as the identity key.
+6. Email/domain claims MUST NOT determine tenant membership.
+7. Tenant membership is derived from the target `User`'s existing
+   tenant.
+8. A conflicting existing `(issuer, subject)` mapping MUST fail closed.
+9. Existing mappings MUST NOT be silently reassigned.
+10. Provisioning is an explicit administrative/provisioning action, not
+    a login-reachable end-user self-claim operation.
+11. Authentication, identity provisioning, authorization, tenant
+    binding, and Execution Authority remain separate concepts
+    (consistent with `AUTHN-7`, `C`, `B2`, `U3`).
+
+**Provisioning authority boundary — ratified 2026-10-06:** Production
+identity provisioning has a distinct authorization boundary from
+ordinary procurement-domain authorization:
+
+1. Application-level authority to perform external-identity
+   provisioning MUST NOT be implied by an ordinary procurement-domain
+   role. `procurement_user` does not imply provisioning authority;
+   `approver` does not imply provisioning authority; no future
+   procurement-domain role may implicitly imply provisioning authority
+   either. The existing flat `User.role` value MUST NOT be treated as
+   an implicit grant of provisioning authority merely because that
+   role is permitted to perform procurement-domain operations.
+2. When provisioning is performed through the application, the
+   provisioning actor MUST be bound to the same tenant as the target
+   `User`: actor identity and actor tenant come from the authenticated
+   `Principal`; the target `User` must already exist; the target
+   `User`'s tenant must match the actor's tenant; the external identity
+   being linked remains the verified `(issuer, subject)` pair already
+   ratified above. Provisioning MUST NOT cross tenant boundaries.
+3. The application-level provisioning permission is a domain-specific
+   identity-provisioning capability. This MUST NOT create or imply a
+   universal/canonical Authority entity or a universal authorization
+   abstraction — consistent with `U3`'s guardrails (no canonical
+   shared Authority entity; no assumption that all domains share one
+   authorization implementation; domain-specific enforcement remains
+   permitted where a distinct domain requires it). The provisioning
+   domain is therefore permitted to define its own capability
+   semantics without introducing a system-wide Authority model.
+4. The existing `AUTHN-12` out-of-band operator/database provisioning
+   path remains an operational/access-control matter outside this
+   application-level actor model. This boundary does not turn the
+   platform/operator path into an application role or an application
+   `Principal`, and does not create a new formal platform-operator
+   authorization model. `AUTHN-12` remains unchanged.
+
+**Scope of this ratification:** This ratifies the provisioning
+mechanism's *semantic shape* and the provisioning-authority boundary
+above — not the complete user-management architecture, and not any
+specific implementation. It does **not** determine: the exact
+capability representation (a role, a separate capability/column/table,
+or another mechanism); the exact role/permission/capability name;
+whether a tenant receives a provisioning actor automatically or must
+request one; whether a tenant administrator specifically is required;
+whether multiple provisioning actors are supported per tenant; the
+exact HTTP route; the exact UI; invitation/email infrastructure; bulk
+provisioning; SCIM/directory integration; user disable/re-enable
+semantics; session revocation semantics; identity re-linking
+semantics; multi-tenant membership (`R5`); or audit-log implementation.
+**The exact capability representation and actor/role naming are
+tracked separately as OPEN** (see `docs/decisions/open.md`).
+
+**Relationship to AUTHN-12:** `AUTHN-12` remains exactly as previously
+ratified — limited to the specific one-user pilot bootstrap — and does
+**not** become the production provisioning mechanism merely because its
+underlying validation logic (pre-existing `User` only, no `Tenant`
+creation, fail-closed on conflicts, `(issuer, subject)` only, no email)
+is the same logic this production rule generalizes around. `AUTHN-12`'s
+own text is unchanged by this entry.
+
+**Explicit non-decisions:** As listed under "Scope of this ratification"
+above. The exact provisioning mechanism's *implementation* (an
+admin-only endpoint, an invitation flow, a continued operator action, or
+otherwise) remains an implementation choice within the semantic rule now
+ratified — not itself decided here.
+
+**Evidence:** Explicit human ratification via conversation, following
+two independent read-only assessments of AUTHN-5 production user
+provisioning: (1) provisioning-mechanism options (identity lifecycle,
+security risk comparison of candidate mechanisms, current-code fit,
+enterprise SaaS onboarding reality, and a neutral mechanism comparison);
+and (2) the administrative actor/role question (the security boundary
+of provisioning, tenant-isolation scoping alternatives, a role-vs-
+capability-vs-separate-authority analysis, and an enterprise
+operating-model analysis), 2026-10-06.
 
 ### AUTHN-6 — Principal Contract Remains Unextended
 
