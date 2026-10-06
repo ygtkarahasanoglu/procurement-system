@@ -92,6 +92,11 @@ test.describe("Full procurement workflow via the browser", () => {
     // No manual tenant/actor selection anymore — the authenticated session
     // injected in beforeEach (procurement user) is the sole identity source.
 
+    // The signed-in user's human-readable name (not just the truncated id)
+    // is resolved from the already-fetched tenant context and shown in the
+    // header identity area.
+    await expect(page.locator(".identity-bar__info")).toContainText("E2E Procurement User");
+
     // --- 1. Create Request: Product A, 100 EA ---
     await page.getByLabel("Product").selectOption({ label: "Product A (E2E-PRODUCT-A)" });
     const quantityInput = page.locator(".panel").filter({ hasText: "New Procurement Request" }).getByLabel("Quantity");
@@ -154,6 +159,9 @@ test.describe("Full procurement workflow via the browser", () => {
     await expect(approvalSection.locator(".value-card")).toContainText("90 EA"); // frozen decision shown before approving
     await approvalSection.getByRole("button", { name: "Approve" }).click();
     await expect(approvalSection.getByText("APPROVED")).toBeVisible();
+    // The approver's human-readable name, resolved from the already-fetched
+    // tenant users list, is shown alongside the existing technical ids.
+    await expect(approvalSection).toContainText("E2E Approver");
 
     // --- 9. Create Purchase Order (no commercial fields entered) ---
     const poSection = page.locator("section.panel").filter({ hasText: "Purchase Order" });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, LOGIN_URL } from "./api/client";
-import type { Principal, ProcurementRequest, Product, Supplier } from "./api/types";
+import type { Principal, ProcurementRequest, Product, Supplier, User } from "./api/types";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { NewRequestForm } from "./components/NewRequestForm";
 import { NewProductForm } from "./components/NewProductForm";
@@ -73,6 +73,7 @@ export default function App() {
 function AuthenticatedApp({ principal, onLogout }: { principal: Principal; onLogout: () => void }) {
   const [products, setProducts] = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [requests, setRequests] = useState<ProcurementRequest[]>([]);
   const [openLineId, setOpenLineId] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -83,10 +84,17 @@ function AuthenticatedApp({ principal, onLogout }: { principal: Principal; onLog
       .then((ctx) => {
         setProducts(ctx.products);
         setSuppliers(ctx.suppliers);
+        setUsers(ctx.users);
       })
       .catch(setError);
     api.listRequests(principal.tenantId).then(setRequests).catch(setError);
   }, [principal.tenantId]);
+
+  // Already-tenant-scoped data from the same context fetch above — no new
+  // request. Falls back to no name (the identity bar still shows the
+  // existing truncated id) if, for any reason, the signed-in user's own
+  // row isn't found in it.
+  const currentUserName = users.find((u) => u.id === principal.userId)?.name;
 
   useEffect(() => {
     reloadTenantData();
@@ -98,6 +106,8 @@ function AuthenticatedApp({ principal, onLogout }: { principal: Principal; onLog
         <h1>YGT Procurement — MVP Workspace</h1>
         <div className="identity-bar">
           <span className="identity-bar__info">
+            {currentUserName && <strong>{currentUserName}</strong>}
+            {currentUserName ? " · " : ""}
             {principal.userId.slice(0, 8)} · {principal.tenantId.slice(0, 8)}
           </span>
           <button type="button" className="btn btn--link" onClick={onLogout}>
@@ -116,6 +126,7 @@ function AuthenticatedApp({ principal, onLogout }: { principal: Principal; onLog
             requestLineId={openLineId}
             products={products}
             suppliers={suppliers}
+            users={users}
             onBack={() => {
               setOpenLineId(null);
               reloadTenantData();

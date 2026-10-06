@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { Product, RequestLineWorkflow, Supplier } from "../api/types";
+import type { Product, RequestLineWorkflow, Supplier, User } from "../api/types";
 import { StatusStepper } from "./StatusStepper";
 import { QuoteForm } from "./QuoteForm";
 
@@ -10,6 +10,7 @@ interface Props {
   requestLineId: string;
   products: Product[];
   suppliers: Supplier[];
+  users: User[];
   onBack: () => void;
   onError: (err: unknown) => void;
 }
@@ -24,7 +25,7 @@ function nameOf(list: { id: string; name: string }[], id: string) {
 // rule itself — it only decides which action button to show based on
 // data the backend already returned (section 13: "UI state is for
 // usability only").
-export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, suppliers, onBack, onError }: Props) {
+export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, suppliers, users, onBack, onError }: Props) {
   const [data, setData] = useState<RequestLineWorkflow | null>(null);
   const [busy, setBusy] = useState(false);
   const [selectedQuoteVersionId, setSelectedQuoteVersionId] = useState("");
@@ -179,6 +180,7 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
                 {currentDecision.selectedQuantity} {currentDecision.unit} × {currentDecision.unitPrice}{" "}
                 {currentDecision.currency}
               </div>
+              <div className="panel-hint">Formed by {nameOf(users, currentDecision.createdById)}</div>
               {currentDecision.status === "DRAFT" && (
                 <form
                   className="decision-form"
@@ -269,7 +271,8 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
           </div>
           {currentApproval ? (
             <p>
-              <span className="badge badge--approved">APPROVED</span> — Approval{" "}
+              <span className="badge badge--approved">APPROVED</span> by{" "}
+              <strong>{nameOf(users, currentApproval.approvedById)}</strong> — Approval{" "}
               <span className="mono">{currentApproval.id.slice(0, 8)}</span> authorizes DecisionPackage{" "}
               <span className="mono">{currentApproval.decisionPackageId.slice(0, 8)}</span>.
             </p>
