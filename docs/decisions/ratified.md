@@ -1776,14 +1776,51 @@ creation, fail-closed on conflicts, `(issuer, subject)` only, no email)
 is the same logic this production rule generalizes around. `AUTHN-12`'s
 own text is unchanged by this entry.
 
+**Grant/Revoke Authority Separation — ratified 2026-10-06:**
+
+1. Holding the performing provisioning capability
+   (`User.canProvisionExternalIdentities = true`) does **not**, by
+   itself, grant authority to grant or revoke that capability for
+   another `User`.
+2. The authority to perform provisioning and the authority to
+   manage/grant/revoke the provisioning capability are distinct
+   concepts.
+3. Therefore, `assertProvisioningAuthorized(...)` MUST NOT be
+   interpreted as, reused as, or extended into grant/revoke authority.
+4. This repository does not currently ratify what specific role,
+   capability, mechanism, or actor model will provide ongoing
+   application-level grant/revoke authority.
+5. The exact grant/revoke mechanism remains OPEN.
+6. The existing out-of-band provisioning-capability bootstrap script
+   (`grantProvisioningCapability.ts`) remains available as an
+   independent, operator-controlled recovery/fallback path, including
+   the case where a tenant has zero application-level
+   provisioning-capable `User`s.
+7. No application-level minimum-capable-user policy is implied by this
+   ratification.
+8. No self-grant or self-revoke policy is implied by this ratification.
+9. No cardinality policy is implied by this ratification — cardinality
+   remains exactly as previously ratified: unconstrained, not newly
+   decided here.
+10. This decision does not introduce or imply: a second capability; a
+    provisioning-administrator role; a tenant-admin role; a generic
+    permission system; a universal Authority entity; a new route; a
+    UI; an API contract; audit requirements; invitations; SCIM; bulk
+    provisioning; session revocation; identity re-linking; or any
+    other lifecycle mechanism.
+11. `AUTHN-12` and all previously ratified AUTHN-5 decisions remain
+    unchanged.
+
 **Explicit non-decisions:** As listed under "Scope of this ratification"
 above. The exact provisioning mechanism's *implementation* (an
 admin-only endpoint, an invitation flow, a continued operator action, or
 otherwise) remains an implementation choice within the semantic rule now
-ratified — not itself decided here.
+ratified — not itself decided here. The exact ongoing grant/revoke
+mechanism (§ "Grant/Revoke Authority Separation" above) is likewise not
+itself decided here.
 
 **Evidence:** Explicit human ratification via conversation, following
-five independent read-only assessments of AUTHN-5 production user
+six independent read-only assessments of AUTHN-5 production user
 provisioning: (1) provisioning-mechanism options (identity lifecycle,
 security risk comparison of candidate mechanisms, current-code fit,
 enterprise SaaS onboarding reality, and a neutral mechanism comparison);
@@ -1798,11 +1835,14 @@ analysis); (4) the first-capability bootstrap assessment (repository
 evidence that all foundational Tenant/User creation is already
 out-of-band, a neutral comparison of bootstrap candidate mechanisms, and
 an analysis of the bootstrap circular-dependency and the AUTHN-12
-boundary); and (5) the bootstrap implementation-form assessment
-(repository evidence on existing operator-script conventions, a neutral
-comparison of implementation-form candidates against the fixed
-bootstrap baseline, and a comparison against `AUTHN-12`'s existing
-script), 2026-10-06.
+boundary); (5) the bootstrap implementation-form assessment (repository
+evidence on existing operator-script conventions, a neutral comparison
+of implementation-form candidates against the fixed bootstrap baseline,
+and a comparison against `AUTHN-12`'s existing script); and (6) the
+grant/revoke lifecycle assessment (a privilege-escalation analysis of
+collapsing performing-authority into grant/revoke authority, a
+self-grant/self-revoke and lockout/compromised-actor analysis, and a
+neutral comparison of candidate grant/revoke actor models), 2026-10-06.
 
 ### AUTHN-6 — Principal Contract Remains Unextended
 

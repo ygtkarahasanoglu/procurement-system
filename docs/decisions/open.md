@@ -54,10 +54,16 @@ event should be treated as an error and corrected, not built upon.
   holds the operator access used for bootstrap, and how that access is
   managed; whether one or multiple provisioning-capable `User`s are
   permitted per tenant; whether every tenant automatically receives
-  one; whether a tenant-administrator concept is introduced; and who
+  one; and whether a tenant-administrator concept is introduced. Who
   may grant/revoke the capability after bootstrap (the subsequent
   lifecycle, as distinct from the first grant, which is now settled
-  above).
+  above) remains OPEN as to its exact mechanism — it is now additionally
+  RATIFIED only that holding the performing capability
+  (`canProvisionExternalIdentities = true`) does **not**, by itself,
+  confer that grant/revoke authority (see `ratified.md`, AUTHN-5,
+  "Grant/Revoke Authority Separation"); the actual mechanism, actor
+  model, self-grant/self-revoke policy, and minimum-capable-user policy
+  are all still OPEN.
 - **RLS** — whether Row-Level Security is adopted as a defense-in-depth
   layer alongside service-layer authorization (R10 in `ratified.md` settles
   only that service-layer authorization is primary).
