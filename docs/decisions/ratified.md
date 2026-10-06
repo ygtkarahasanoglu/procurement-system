@@ -2063,3 +2063,145 @@ configured and a real browser login correctly reached the expected
 bootstrapping that one pilot user; it does not reopen, extend, or
 implement any part of `AUTHN-1`–`AUTHN-11`, and `AUTHN-5`'s open
 production-mechanism question is unchanged by it.
+
+## RFQ Send Domain Decisions (RFQ-S1–RFQ-S2)
+
+Context: `RFQDispatch` (schema, `R1`), its tenant-scoped domain service
+(`rfqDispatchService.ts`), and its response-token issuance
+(`rfqResponseToken.ts`/`issueResponseToken`) already exist and are
+unaffected by this ratification. Nothing below authorizes, implements,
+or schedules the actual SEND implementation itself — these are
+documentation-only semantic ratifications made in advance of that
+implementation, per this repository's established Fast Track Protocol
+(`docs/development/implementation-playbook.md`) for RED-adjacent
+decisions preceding a YELLOW implementation batch.
+
+### RFQ-S1 — RFQ Send Technical Lifecycle (`SENDING` State)
+
+**Statement:** RFQDispatch SEND follows the technical lifecycle:
+
+```
+PENDING → SENDING → SENT
+PENDING → SENDING → SEND_FAILED
+```
+
+`SENDING` means: this system has successfully claimed the RFQDispatch
+for one SEND attempt and is currently performing that external SEND
+operation; the system has not yet recorded a terminal outcome. A
+concurrent SEND attempt must not be able to claim the same RFQDispatch
+once another caller has transitioned it to `SENDING` — exactly one
+caller may hold `SENDING` for a given RFQDispatch at a time.
+
+**Evidence:** Independent RFQ SEND concurrency/CAS semantic assessment
+(this repository's own architecture-review history). Demonstrated by
+direct scenario walkthrough that reusing an existing terminal value
+(`SENT` or `SEND_FAILED`) as the claim-time marker forces the system to
+assert a false fact about the external world during any crash between
+claim and outcome, whereas a dedicated in-progress value only ever
+asserts the system's own true epistemic state ("an attempt is in
+progress, outcome not yet known").
+
+**Scope:** Establishes only the existence and meaning of the `SENDING`
+state and the requirement that it provide exclusive, atomic claiming.
+Does not establish how SEND is triggered, who may trigger it (see
+`RFQ-S2`), what happens to a dispatch that remains stuck in `SENDING`,
+or how retries/resends are governed.
+
+**No schema/migration required:** `RFQDispatch.status` is implemented
+as a plain `String` column, not a Prisma/PostgreSQL enum type —
+consistent with every other status column in this schema
+(`ProcurementRequest`, `SourcingEvent`, `DecisionPackage`, `Approval`).
+Adding `SENDING` to the set of values the application writes and
+recognizes is an implementation/documentation convention, not a schema
+change.
+
+**Provider timeout / unknown outcome:** When a SEND attempt's outcome
+cannot be determined (e.g., a provider timeout), the RFQDispatch
+remains in `SENDING`. It must **not** be reinterpreted as `SEND_FAILED`
+merely because the outcome is unknown — doing so would assert a false
+fact (confirmed failure) about an attempt whose actual outcome may have
+been success. This ratification does not define, and does not require,
+any specific mechanism for later resolving a dispatch stuck in
+`SENDING` — that recovery mechanism remains **OPEN** (see `open.md`).
+
+**`RESPONDED` unchanged:** The existing `RESPONDED` status and its
+relationship to `SENT` are unchanged and not redesigned by this
+decision.
+
+**`SENDING` MUST NOT be interpreted as:** Approval; Execution Authority;
+application Authority; Capability; supplier authentication; delivery
+confirmation; retry permission; resend permission; or a permanent
+business status. It is technical process-lifecycle bookkeeping only — a
+fact about this system's own execution, never a claim about the
+external world beyond "an attempt is in progress."
+
+**Explicit non-decisions:** RFQ resend/retry policy; stuck-`SENDING`
+recovery mechanism; provider timeout/unknown-outcome recovery semantics;
+token single-use/replay policy; token lifetime as business policy; quote
+resubmission/requote/versioning policy; email provider selection;
+provider message ID/delivery confirmation; `SEC-010` supplier
+authentication; future Execution Authority design. None of these may be
+inferred from `RFQ-S1` — see `open.md`.
+
+### RFQ-S2 — RFQ Send Application Authorization
+
+**Statement:** RFQ SEND is gated by the existing application
+authorization mechanism, `assertActorAuthorized(tenantId, actorUserId,
+allowedRoles)`, with `allowedRoles = ["procurement_user", "approver"]`.
+No new role, no new generic capability/authorization framework, and no
+relationship to `AUTHN-5`'s provisioning capability are introduced.
+
+**Evidence:** Independent RFQ SEND authorization role semantic
+assessment, based on the existing, demonstrated authorization matrix:
+`approve` (creating the Approval fact itself) is gated `["approver"]`
+only; `freezeDecisionPackage` and `createPurchaseOrderFromApproval` —
+both workflow-progression actions distinct from the Approval decision
+itself — are gated `["procurement_user", "approver"]`. SEND is a
+workflow-progression action, not the Approval decision itself, and is
+therefore governed by the same pattern as `freeze`/PO creation rather
+than the pattern used for `approve` specifically.
+
+**Why this role set, precisely:** this is an explicit ratification of
+the existing non-approval authorization pattern applied to a new
+action — not an inference that external communication carries the same
+security properties as an internal DB write. SEND is the first
+role-gated operation in this codebase with an external communication
+side effect; `freeze` and PO creation, the only prior precedents for
+this gate shape, are both internal-only. This decision does not claim
+SEND "has always been covered" by that precedent — it explicitly
+extends it, by ratification, to a materially new kind of action.
+
+**Critical architectural separation (must be preserved exactly):**
+
+```
+Approval ≠ Application Authority ≠ Execution Authority ≠ Capability ≠ Tenant Binding
+```
+
+- Using `assertActorAuthorized` for SEND is an **application Authority**
+  decision only. It does not implement, narrow, or resolve **Execution
+  Authority** (`B2`), which remains separately defined and currently
+  entirely unimplemented anywhere in this codebase.
+- Approval does not grant SEND authority. The absence of an Approval
+  does not itself determine SEND authority either way — under the
+  ratified lifecycle, an Approval cannot exist yet at the point SEND
+  occurs, so Approval and SEND authorization are simply unrelated, not
+  sequentially dependent.
+- `AUTHN-5`'s `canProvisionExternalIdentities` / provisioning
+  authorization is unrelated to procurement SEND authorization; no
+  relationship between them is created by this decision.
+- `EmailSender` technical reachability (Capability) does not itself
+  constitute or substitute for this authorization check (Authority) —
+  the two remain distinct per `C`.
+
+**This decision MUST NOT be read as:** establishing that
+`procurement_user` + `approver` is the mathematically or conceptually
+"least privileged" possible set; establishing that Approval is required
+before SEND; establishing that SEND is equivalent to, or governed by the
+same semantics as, PO execution; or establishing that Execution
+Authority has been implemented.
+
+**Explicit non-decisions:** future Execution Authority design or
+implementation; whether a stricter or different role set should ever
+govern external-communication actions generally; `AUTHN-5`
+provisioning-capability lifecycle questions. None of these may be
+inferred from `RFQ-S2` — see `open.md`.

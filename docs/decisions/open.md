@@ -77,6 +77,37 @@ event should be treated as an error and corrected, not built upon.
   (see `03-data-model.md`), and how their provenance is established.
 - **Reconciliation schedule/scope** — how often, and over what scope, ERP
   reconciliation runs (see `03-data-model.md`, ERP sync section).
+- **RFQ response token single-use/replay** — whether a supplier's response
+  token may be used more than once, and how replay is detected/prevented,
+  once a response-capture endpoint exists (see `ratified.md`, `RFQ-S1`;
+  not resolved by the RFQ SEND lifecycle/authorization ratification).
+- **RFQ response token lifetime (business policy)** — the current RFQ
+  response-token lifetime is an implementation-only default
+  (`app/src/services/rfqDispatchService.ts`), not a ratified business
+  policy; the actual required response window remains OPEN.
+- **RFQ resend/retry policy** — whether an RFQDispatch already `SENT`,
+  `SEND_FAILED`, or `RESPONDED` may be sent/resent again, and under what
+  conditions.
+- **Stuck-`SENDING` recovery** — how an RFQDispatch left in `SENDING`
+  (e.g., after a provider timeout or a process crash mid-attempt) is
+  eventually resolved to a terminal outcome (see `ratified.md`, `RFQ-S1`).
+- **Provider timeout / unknown outcome handling** — the eventual recovery
+  mechanism for a SEND attempt whose outcome could not be determined (see
+  `ratified.md`, `RFQ-S1`); `RFQ-S1` ratifies only that such an attempt
+  remains `SENDING`, not how it is later resolved.
+- **Provider message ID / delivery confirmation** — whether and how
+  provider-level transmission evidence (e.g., a message id, delivery/
+  bounce status) is captured.
+- **Email provider selection** — which outbound email provider/service is
+  used, and the associated trust/data-residency implications.
+- **Quote resubmission/requote/versioning** — whether a supplier may
+  submit more than one response/quote version for the same RFQDispatch or
+  SourcingEvent (cross-referenced from the existing `QuoteVersion`
+  schema comment; not previously registered in this document).
+- **Future Execution Authority (`B2`) design** — the concrete design/
+  implementation of Execution Authority itself remains unaddressed; `B2`
+  ratifies only that it is conceptually distinct from Approval/
+  Capability/Tenant Binding and currently unimplemented.
 
 ## D-5 — Explicit invalidation/cancellation mechanism
 
