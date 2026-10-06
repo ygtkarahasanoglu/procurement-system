@@ -83,6 +83,8 @@ export const api = {
       throw err;
     }
   },
+  /** Revokes the current session cookie server-side (AUTHN Step 7). */
+  logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   listTenants: () => get<Tenant[]>("/tenants"),
   getTenantContext: (tenantId: string) => get<TenantContext>(`/tenants/${tenantId}/context`),
   listRequests: (tenantId: string) => get<ProcurementRequest[]>(`/requests?tenantId=${tenantId}`),

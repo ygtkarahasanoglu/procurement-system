@@ -24,6 +24,18 @@
   color: #1a1d23;
 }
 
+.identity-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.identity-bar__info {
+  font-size: 12px;
+  font-family: monospace;
+  color: #6b7280;
+}
+
 .actor-bar {
   display: flex;
   gap: 16px;

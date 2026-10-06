@@ -202,6 +202,20 @@ test.describe("Full procurement workflow via the browser", () => {
     const text = (await banner.first().textContent()) ?? "";
     expect(text).not.toMatch(/at Object\.|at Module\._compile|node_modules|PrismaClient/);
   });
+
+  test("Sign out: the app returns to the sign-in screen and the session can no longer authenticate", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "YGT Procurement — MVP Workspace" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Sign out" }).click();
+
+    await expect(page.getByText(/Sign in to use the procurement workspace/)).toBeVisible();
+
+    // The session must actually be revoked server-side, not just hidden
+    // client-side — page.request shares this browser context's cookie jar.
+    const res = await page.request.get("http://localhost:3000/tenants");
+    expect(res.status()).toBe(401);
+  });
 });
 
 async function submitQuote(

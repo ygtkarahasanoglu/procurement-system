@@ -23,11 +23,22 @@ function useSessionBootstrap() {
       .finally(() => setChecked(true));
   }, []);
 
-  return { principal, checked };
+  // Always clears local identity state, even if the request itself fails
+  // (network error, etc.) — a failed logout call must never leave the UI
+  // showing an authenticated workspace it can no longer be sure is valid.
+  const logout = useCallback(async () => {
+    try {
+      await api.logout();
+    } finally {
+      setPrincipal(null);
+    }
+  }, []);
+
+  return { principal, checked, logout };
 }
 
 export default function App() {
-  const { principal, checked } = useSessionBootstrap();
+  const { principal, checked, logout } = useSessionBootstrap();
 
   if (!checked) {
     return null;
@@ -46,7 +57,7 @@ export default function App() {
     );
   }
 
-  return <AuthenticatedApp principal={principal} />;
+  return <AuthenticatedApp principal={principal} onLogout={logout} />;
 }
 
 // Tenant and acting-user identity come exclusively from the authenticated
@@ -57,7 +68,7 @@ export default function App() {
 // assertTenantMatches; the actor fields are overridden with
 // req.principal!.userId outright) — this component simply sends the real
 // values instead of ones from a dropdown.
-function AuthenticatedApp({ principal }: { principal: Principal }) {
+function AuthenticatedApp({ principal, onLogout }: { principal: Principal; onLogout: () => void }) {
   const [products, setProducts] = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [requests, setRequests] = useState<ProcurementRequest[]>([]);
@@ -83,6 +94,14 @@ function AuthenticatedApp({ principal }: { principal: Principal }) {
     <div className="app">
       <header className="app-header">
         <h1>YGT Procurement — MVP Workspace</h1>
+        <div className="identity-bar">
+          <span className="identity-bar__info">
+            {principal.userId.slice(0, 8)} · {principal.tenantId.slice(0, 8)}
+          </span>
+          <button type="button" className="btn btn--link" onClick={onLogout}>
+            Sign out
+          </button>
+        </div>
       </header>
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
