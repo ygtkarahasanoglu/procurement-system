@@ -1,4 +1,4 @@
-import { prisma } from "../db/client";
+import { tenantScoped } from "../db/client";
 import { NotFoundError, ValidationError } from "../domain/errors";
 import { requireId } from "../domain/validation";
 
@@ -28,8 +28,9 @@ const PROVIDER_NAME = "deterministic-test-provider-v1";
 export async function generateRecommendation(tenantId: string, sourcingEventId: string) {
   const validTenantId = requireId(tenantId, "tenantId");
   const validSourcingEventId = requireId(sourcingEventId, "sourcingEventId");
+  const db = tenantScoped(validTenantId);
 
-  const sourcingEvent = await prisma.sourcingEvent.findFirst({
+  const sourcingEvent = await db.sourcingEvent.findFirst({
     where: { id: validSourcingEventId, tenantId: validTenantId },
     include: { requestLine: true },
   });
@@ -37,7 +38,7 @@ export async function generateRecommendation(tenantId: string, sourcingEventId: 
     throw new NotFoundError("SourcingEvent", validSourcingEventId);
   }
 
-  const candidates = await prisma.quoteVersion.findMany({
+  const candidates = await db.quoteVersion.findMany({
     where: { tenantId: validTenantId, supplierQuote: { sourcingEventId: validSourcingEventId } },
   });
   if (candidates.length === 0) {
@@ -62,7 +63,7 @@ export async function generateRecommendation(tenantId: string, sourcingEventId: 
 
   const chosen = sorted[0];
 
-  return prisma.recommendationRecord.create({
+  return db.recommendationRecord.create({
     data: {
       tenantId: validTenantId,
       sourcingEventId: validSourcingEventId,

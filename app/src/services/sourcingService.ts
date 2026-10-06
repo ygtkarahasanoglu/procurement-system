@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "../db/client";
+import { tenantScoped } from "../db/client";
 import { NotFoundError, InvalidStateError } from "../domain/errors";
 import { requireId } from "../domain/validation";
 
@@ -16,9 +16,10 @@ import { requireId } from "../domain/validation";
 export async function createSourcingEvent(tenantId: string, requestLineId: string) {
   const validTenantId = requireId(tenantId, "tenantId");
   const validRequestLineId = requireId(requestLineId, "requestLineId");
+  const db = tenantScoped(validTenantId);
 
   try {
-    return await prisma.$transaction(
+    return await db.$transaction(
       async (tx) => {
         const line = await tx.requestLine.findFirst({
           where: { id: validRequestLineId, tenantId: validTenantId },

@@ -1,4 +1,4 @@
-import { prisma } from "../db/client";
+import { prisma, tenantScoped } from "../db/client";
 import { requireId } from "../domain/validation";
 import { NotFoundError } from "../domain/errors";
 
@@ -20,6 +20,11 @@ import { NotFoundError } from "../domain/errors";
 // (server.ts); this function has no way to distinguish a verified
 // principal's tenantId from a client-supplied one, so that verification is
 // the caller's responsibility, not this function's.
+// This looks up the GLOBAL Tenant model by its own id (not a tenantId
+// foreign key) — Tenant carries no tenantId column (db/client.ts,
+// TENANT_SCOPED_MODELS) and is outside SEC-012/R15's scope by design, so
+// this one call deliberately uses the base `prisma` client rather than
+// `tenantScoped()`.
 export async function listTenants(tenantId: string) {
   return prisma.tenant.findMany({ where: { id: tenantId }, orderBy: { createdAt: "asc" }, select: { id: true, name: true } });
 }
@@ -27,17 +32,19 @@ export async function listTenants(tenantId: string) {
 // Everything a dev user needs to populate selectors/forms for one tenant.
 export async function getTenantContext(tenantId: string) {
   const validTenantId = requireId(tenantId, "tenantId");
+  const db = tenantScoped(validTenantId);
   const [users, products, suppliers] = await Promise.all([
-    prisma.user.findMany({ where: { tenantId: validTenantId }, orderBy: { createdAt: "asc" } }),
-    prisma.product.findMany({ where: { tenantId: validTenantId }, orderBy: { createdAt: "asc" } }),
-    prisma.supplier.findMany({ where: { tenantId: validTenantId }, orderBy: { createdAt: "asc" } }),
+    db.user.findMany({ where: { tenantId: validTenantId }, orderBy: { createdAt: "asc" } }),
+    db.product.findMany({ where: { tenantId: validTenantId }, orderBy: { createdAt: "asc" } }),
+    db.supplier.findMany({ where: { tenantId: validTenantId }, orderBy: { createdAt: "asc" } }),
   ]);
   return { users, products, suppliers };
 }
 
 export async function listRequests(tenantId: string) {
   const validTenantId = requireId(tenantId, "tenantId");
-  return prisma.procurementRequest.findMany({
+  const db = tenantScoped(validTenantId);
+  return db.procurementRequest.findMany({
     where: { tenantId: validTenantId },
     orderBy: { createdAt: "desc" },
     include: { lines: { include: { product: true } } },
@@ -52,8 +59,9 @@ export async function listRequests(tenantId: string) {
 export async function getRequestLineWorkflow(tenantId: string, requestLineId: string) {
   const validTenantId = requireId(tenantId, "tenantId");
   const validRequestLineId = requireId(requestLineId, "requestLineId");
+  const db = tenantScoped(validTenantId);
 
-  const requestLine = await prisma.requestLine.findFirst({
+  const requestLine = await db.requestLine.findFirst({
     where: { id: validRequestLineId, tenantId: validTenantId },
     include: { product: true, request: true },
   });
@@ -61,7 +69,7 @@ export async function getRequestLineWorkflow(tenantId: string, requestLineId: st
     throw new NotFoundError("RequestLine", validRequestLineId);
   }
 
-  const sourcingEvents = await prisma.sourcingEvent.findMany({
+  const sourcingEvents = await db.sourcingEvent.findMany({
     where: { requestLineId: validRequestLineId, tenantId: validTenantId },
     orderBy: { createdAt: "asc" },
   });
@@ -74,17 +82,17 @@ export async function getRequestLineWorkflow(tenantId: string, requestLineId: st
   }
 
   const [quoteVersions, recommendations, decisionPackages] = await Promise.all([
-    prisma.quoteVersion.findMany({
+    db.quoteVersion.findMany({
       where: { tenantId: validTenantId, supplierQuote: { sourcingEventId: activeSourcingEvent.id } },
       include: { supplierQuote: { include: { supplier: true } } },
       orderBy: { createdAt: "asc" },
     }),
-    prisma.recommendationRecord.findMany({
+    db.recommendationRecord.findMany({
       where: { tenantId: validTenantId, sourcingEventId: activeSourcingEvent.id },
       include: { recommendedQuoteVersion: { include: { supplierQuote: { include: { supplier: true } } } } },
       orderBy: { createdAt: "desc" },
     }),
-    prisma.decisionPackage.findMany({
+    db.decisionPackage.findMany({
       where: { tenantId: validTenantId, sourcingEventId: activeSourcingEvent.id },
       include: {
         approvals: { include: { purchaseOrder: true } },

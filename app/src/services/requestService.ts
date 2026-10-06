@@ -1,4 +1,4 @@
-import { prisma } from "../db/client";
+import { tenantScoped } from "../db/client";
 import { NotFoundError, ValidationError } from "../domain/errors";
 import { requireId, requirePositiveDecimal, requireUnit } from "../domain/validation";
 
@@ -24,8 +24,9 @@ export async function createRequest(input: CreateRequestInput) {
   }
   const tenantId = requireId(input.tenantId, "tenantId");
   const createdById = requireId(input.createdById, "createdById");
+  const db = tenantScoped(tenantId);
 
-  const createdBy = await prisma.user.findFirst({ where: { id: createdById, tenantId } });
+  const createdBy = await db.user.findFirst({ where: { id: createdById, tenantId } });
   if (!createdBy) {
     throw new NotFoundError("User", createdById);
   }
@@ -43,7 +44,7 @@ export async function createRequest(input: CreateRequestInput) {
       const requestedQuantity = requirePositiveDecimal(line.requestedQuantity, `lines[${index}].requestedQuantity`);
       const unit = requireUnit(line.unit);
 
-      const product = await prisma.product.findFirst({ where: { id: productId, tenantId } });
+      const product = await db.product.findFirst({ where: { id: productId, tenantId } });
       if (!product) {
         throw new NotFoundError("Product", productId);
       }
@@ -52,7 +53,7 @@ export async function createRequest(input: CreateRequestInput) {
     })
   );
 
-  return prisma.procurementRequest.create({
+  return db.procurementRequest.create({
     data: {
       tenantId,
       createdById,

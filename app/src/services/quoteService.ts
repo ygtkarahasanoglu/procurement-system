@@ -1,4 +1,4 @@
-import { prisma } from "../db/client";
+import { tenantScoped } from "../db/client";
 import { NotFoundError, ValidationError } from "../domain/errors";
 import { requireId, requirePositiveDecimal, requireUnit, requireCurrency } from "../domain/validation";
 
@@ -33,29 +33,30 @@ export async function submitQuote(input: SubmitQuoteInput) {
   const unit = requireUnit(input.unit);
   const unitPrice = requirePositiveDecimal(input.unitPrice, "unitPrice");
   const currency = requireCurrency(input.currency);
+  const db = tenantScoped(tenantId);
 
-  const sourcingEvent = await prisma.sourcingEvent.findFirst({
+  const sourcingEvent = await db.sourcingEvent.findFirst({
     where: { id: sourcingEventId, tenantId },
   });
   if (!sourcingEvent) {
     throw new NotFoundError("SourcingEvent", sourcingEventId);
   }
 
-  const supplier = await prisma.supplier.findFirst({
+  const supplier = await db.supplier.findFirst({
     where: { id: supplierId, tenantId },
   });
   if (!supplier) {
     throw new NotFoundError("Supplier", supplierId);
   }
 
-  const product = await prisma.product.findFirst({
+  const product = await db.product.findFirst({
     where: { id: productId, tenantId },
   });
   if (!product) {
     throw new NotFoundError("Product", productId);
   }
 
-  return prisma.supplierQuote.create({
+  return db.supplierQuote.create({
     data: {
       tenantId,
       sourcingEventId,
@@ -79,8 +80,9 @@ export async function submitQuote(input: SubmitQuoteInput) {
 export async function listQuoteVersionsForSourcingEvent(tenantId: string, sourcingEventId: string) {
   const validTenantId = requireId(tenantId, "tenantId");
   const validSourcingEventId = requireId(sourcingEventId, "sourcingEventId");
+  const db = tenantScoped(validTenantId);
 
-  return prisma.quoteVersion.findMany({
+  return db.quoteVersion.findMany({
     where: {
       tenantId: validTenantId,
       supplierQuote: { sourcingEventId: validSourcingEventId },

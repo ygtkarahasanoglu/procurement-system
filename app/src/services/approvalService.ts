@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "../db/client";
+import { tenantScoped } from "../db/client";
 import { NotFoundError, InvalidStateError } from "../domain/errors";
 import { assertActorAuthorized } from "../domain/authorization";
 import { requireId } from "../domain/validation";
@@ -30,8 +30,9 @@ export async function approve(tenantId: string, decisionPackageId: string, appro
   const validApprovedById = requireId(approvedById, "approvedById");
 
   await assertActorAuthorized(validTenantId, validApprovedById, ["approver"]);
+  const db = tenantScoped(validTenantId);
 
-  const decisionPackage = await prisma.decisionPackage.findFirst({
+  const decisionPackage = await db.decisionPackage.findFirst({
     where: { id: validDecisionPackageId, tenantId: validTenantId },
   });
   if (!decisionPackage) {
@@ -43,7 +44,7 @@ export async function approve(tenantId: string, decisionPackageId: string, appro
     );
   }
 
-  const existingApproval = await prisma.approval.findUnique({ where: { decisionPackageId: validDecisionPackageId } });
+  const existingApproval = await db.approval.findUnique({ where: { decisionPackageId: validDecisionPackageId } });
   if (existingApproval) {
     throw new InvalidStateError(
       `DecisionPackage ${validDecisionPackageId} already has an Approval (${existingApproval.id}) — V1 permits at most one.`
@@ -51,7 +52,7 @@ export async function approve(tenantId: string, decisionPackageId: string, appro
   }
 
   try {
-    return await prisma.approval.create({
+    return await db.approval.create({
       data: {
         tenantId: validTenantId,
         decisionPackageId: validDecisionPackageId,

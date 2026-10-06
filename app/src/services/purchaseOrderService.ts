@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "../db/client";
+import { tenantScoped } from "../db/client";
 import { NotFoundError, InvalidStateError, ApprovalRequiredError, CommercialDeviationError } from "../domain/errors";
 import { assertActorAuthorized } from "../domain/authorization";
 import { requireId, requirePositiveDecimal } from "../domain/validation";
@@ -56,9 +56,10 @@ export async function createPurchaseOrderFromApproval(
   }
 
   await assertActorAuthorized(validTenantId, validActingUserId, ["procurement_user", "approver"]);
+  const db = tenantScoped(validTenantId);
 
   try {
-    return await prisma.$transaction(async (tx) => {
+    return await db.$transaction(async (tx) => {
       // APO-D1: PO existence requires a valid Approval for the relevant
       // frozen decision. Scoping by (id, tenantId) together means a valid
       // Approval belonging to a different tenant is indistinguishable

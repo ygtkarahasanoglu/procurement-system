@@ -1,4 +1,4 @@
-import { prisma } from "../db/client";
+import { tenantScoped } from "../db/client";
 import { NotFoundError, InvalidStateError, ValidationError } from "../domain/errors";
 import { assertActorAuthorized } from "../domain/authorization";
 import { requireId, requirePositiveDecimal } from "../domain/validation";
@@ -39,13 +39,14 @@ export async function formDecision(input: FormDecisionInput) {
   const createdById = requireId(input.createdById, "createdById");
   const selectedQuantity = requirePositiveDecimal(input.selectedQuantity, "selectedQuantity");
   const unitPriceOverride = input.unitPrice !== undefined ? requirePositiveDecimal(input.unitPrice, "unitPrice") : undefined;
+  const db = tenantScoped(tenantId);
 
-  const createdBy = await prisma.user.findFirst({ where: { id: createdById, tenantId } });
+  const createdBy = await db.user.findFirst({ where: { id: createdById, tenantId } });
   if (!createdBy) {
     throw new NotFoundError("User", createdById);
   }
 
-  const quoteVersion = await prisma.quoteVersion.findFirst({
+  const quoteVersion = await db.quoteVersion.findFirst({
     where: { id: sourceQuoteVersionId, tenantId },
     include: { supplierQuote: true },
   });
@@ -64,7 +65,7 @@ export async function formDecision(input: FormDecisionInput) {
 
   const unitPrice = unitPriceOverride ?? quoteVersion.unitPrice.toString();
 
-  return prisma.decisionPackage.create({
+  return db.decisionPackage.create({
     data: {
       tenantId,
       sourcingEventId,
@@ -107,13 +108,14 @@ export async function reviseDecision(input: ReviseDecisionInput) {
   const tenantId = requireId(input.tenantId, "tenantId");
   const decisionPackageId = requireId(input.decisionPackageId, "decisionPackageId");
   const actingUserId = requireId(input.actingUserId, "actingUserId");
+  const db = tenantScoped(tenantId);
 
-  const actingUser = await prisma.user.findFirst({ where: { id: actingUserId, tenantId } });
+  const actingUser = await db.user.findFirst({ where: { id: actingUserId, tenantId } });
   if (!actingUser) {
     throw new NotFoundError("User", actingUserId);
   }
 
-  const existing = await prisma.decisionPackage.findFirst({
+  const existing = await db.decisionPackage.findFirst({
     where: { id: decisionPackageId, tenantId },
     include: { sourceQuoteVersion: true },
   });
@@ -142,7 +144,7 @@ export async function reviseDecision(input: ReviseDecisionInput) {
 
   // Re-assert DRAFT atomically: a concurrent freeze between the read
   // above and this write must not be silently overwritten by a revision.
-  const result = await prisma.decisionPackage.updateMany({
+  const result = await db.decisionPackage.updateMany({
     where: { id: decisionPackageId, tenantId, status: "DRAFT" },
     data,
   });
@@ -152,7 +154,7 @@ export async function reviseDecision(input: ReviseDecisionInput) {
     );
   }
 
-  return prisma.decisionPackage.findUniqueOrThrow({ where: { id: decisionPackageId } });
+  return db.decisionPackage.findUniqueOrThrow({ where: { id: decisionPackageId } });
 }
 
 // One-way DRAFT -> FROZEN transition. After this, no function in this
@@ -171,15 +173,16 @@ export async function freezeDecisionPackage(tenantId: string, decisionPackageId:
   const validActingUserId = requireId(actingUserId, "actingUserId");
 
   await assertActorAuthorized(validTenantId, validActingUserId, ["procurement_user", "approver"]);
+  const db = tenantScoped(validTenantId);
 
-  const existing = await prisma.decisionPackage.findFirst({
+  const existing = await db.decisionPackage.findFirst({
     where: { id: validDecisionPackageId, tenantId: validTenantId },
   });
   if (!existing) {
     throw new NotFoundError("DecisionPackage", validDecisionPackageId);
   }
 
-  const result = await prisma.decisionPackage.updateMany({
+  const result = await db.decisionPackage.updateMany({
     where: { id: validDecisionPackageId, tenantId: validTenantId, status: "DRAFT" },
     data: { status: "FROZEN", frozenAt: new Date() },
   });
@@ -187,5 +190,5 @@ export async function freezeDecisionPackage(tenantId: string, decisionPackageId:
     throw new InvalidStateError(`DecisionPackage ${validDecisionPackageId} is already FROZEN.`);
   }
 
-  return prisma.decisionPackage.findUniqueOrThrow({ where: { id: validDecisionPackageId } });
+  return db.decisionPackage.findUniqueOrThrow({ where: { id: validDecisionPackageId } });
 }
