@@ -93,6 +93,10 @@ export const api = {
 
   createProduct: (tenantId: string, name: string, sku: string) => post<Product>("/products", { tenantId, name, sku }),
   createSupplier: (tenantId: string, name: string) => post<Supplier>("/suppliers", { tenantId, name }),
+  updateProduct: (tenantId: string, productId: string, name: string, sku: string) =>
+    patch<Product>(`/products/${productId}`, { tenantId, name, sku }),
+  updateSupplier: (tenantId: string, supplierId: string, name: string) =>
+    patch<Supplier>(`/suppliers/${supplierId}`, { tenantId, name }),
 
   createRequest: (input: {
     tenantId: string;

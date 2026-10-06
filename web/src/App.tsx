@@ -137,12 +137,16 @@ function AuthenticatedApp({ principal, onLogout }: { principal: Principal; onLog
           <>
             <NewProductForm
               tenantId={principal.tenantId}
+              products={products}
               onCreated={(product) => setProducts((prev) => [...prev, product])}
+              onUpdated={(product) => setProducts((prev) => prev.map((p) => (p.id === product.id ? product : p)))}
               onError={setError}
             />
             <NewSupplierForm
               tenantId={principal.tenantId}
+              suppliers={suppliers}
               onCreated={(supplier) => setSuppliers((prev) => [...prev, supplier])}
+              onUpdated={(supplier) => setSuppliers((prev) => prev.map((s) => (s.id === supplier.id ? supplier : s)))}
               onError={setError}
             />
             <NewRequestForm

@@ -211,6 +211,27 @@ test.describe("Full procurement workflow via the browser", () => {
     expect(text).not.toMatch(/at Object\.|at Module\._compile|node_modules|PrismaClient/);
   });
 
+  test("Editing an existing Product updates it in place in the UI", async ({ page }) => {
+    await page.goto("/");
+
+    // Create a fresh product via the existing create form rather than
+    // editing the shared "Product A" fixture other tests depend on.
+    await page.locator("#new-product-name").fill("Editable Product");
+    await page.locator("#new-product-sku").fill("EDIT-SKU-1");
+    await page.getByRole("button", { name: "Create Product" }).click();
+
+    const row = page.locator(".catalog-list__row", { hasText: "Editable Product" });
+    await expect(row).toBeVisible();
+    await row.getByRole("button", { name: "Edit" }).click();
+
+    await page.getByLabel("Edit name for Editable Product").fill("Edited Product Name");
+    await page.getByLabel("Edit SKU for Editable Product").fill("EDITED-SKU");
+    await page.getByRole("button", { name: "Save" }).click();
+
+    await expect(page.locator(".catalog-list__row", { hasText: "Edited Product Name" })).toBeVisible();
+    await expect(page.locator(".catalog-list__row", { hasText: "Editable Product" })).toHaveCount(0);
+  });
+
   test("Sign out: the app returns to the sign-in screen and the session can no longer authenticate", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "YGT Procurement — MVP Workspace" })).toBeVisible();

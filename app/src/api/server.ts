@@ -212,6 +212,28 @@ export function createApp(authenticator: Authenticator) {
     )
   );
 
+  // Corrects ordinary data-entry mistakes on an already-existing
+  // Product/Supplier. Same tenant-binding/authenticated-Principal
+  // convention as every other mutating route above — no deletion, no
+  // identity/matching semantics, no new authorization concept.
+  app.patch(
+    "/products/:id",
+    wrap((req) =>
+      productService.updateProduct(
+        assertTenantMatches(req.principal!, req.body.tenantId),
+        req.params.id,
+        req.body.name,
+        req.body.sku
+      )
+    )
+  );
+  app.patch(
+    "/suppliers/:id",
+    wrap((req) =>
+      supplierService.updateSupplier(assertTenantMatches(req.principal!, req.body.tenantId), req.params.id, req.body.name)
+    )
+  );
+
   // AUTH-5: createdById is no longer accepted from the body as the source
   // of truth — it is overridden with the authenticated principal's userId.
   // tenantId is verified, not merely trusted. requestService.createRequest's

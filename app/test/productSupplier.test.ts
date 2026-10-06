@@ -36,6 +36,21 @@ async function httpPost(path: string, body: unknown, headers: Record<string, str
   return { status: res.status, json };
 }
 
+async function httpPatch(path: string, body: unknown, headers: Record<string, string> | null) {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...(headers ?? {}) },
+    body: JSON.stringify(body),
+  });
+  let json: unknown = null;
+  try {
+    json = await res.json();
+  } catch {
+    // no body
+  }
+  return { status: res.status, json };
+}
+
 describe("Tenant-scoped Product/Supplier creation", () => {
   let tenantAId: string;
   let tenantBId: string;
@@ -208,5 +223,79 @@ describe("Tenant-scoped Product/Supplier creation", () => {
       currency: "EUR",
     });
     expect(quote.versions[0].productId).toBe(product.id);
+  });
+
+  // ---------------------------------------------------------------
+  // Product/Supplier update: correcting an ordinary data-entry mistake
+  // on an already-existing row. Same tenant-isolation discipline as
+  // creation above — a cross-tenant target id is rejected identically
+  // to a nonexistent one (NotFoundError), never distinguished.
+  // ---------------------------------------------------------------
+  it("12. an authenticated tenant user can update their own Product via PATCH /products/:id", async () => {
+    const created = await productService.createProduct(tenantAId, "Original Name", "ORIG-SKU");
+    const res = await httpPatch(
+      `/products/${created.id}`,
+      { tenantId: tenantAId, name: "Corrected Name", sku: "FIXED-SKU" },
+      authHeaders(userAId, tenantAId)
+    );
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ id: created.id, name: "Corrected Name", sku: "FIXED-SKU" });
+  });
+
+  it("13. an authenticated tenant user can update their own Supplier via PATCH /suppliers/:id", async () => {
+    const created = await supplierService.createSupplier(tenantAId, "Original Supplier Name");
+    const res = await httpPatch(
+      `/suppliers/${created.id}`,
+      { tenantId: tenantAId, name: "Corrected Supplier Name" },
+      authHeaders(userAId, tenantAId)
+    );
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ id: created.id, name: "Corrected Supplier Name" });
+  });
+
+  it("14. Product update requires a non-empty name", async () => {
+    const created = await productService.createProduct(tenantAId, "Name", "SKU-A");
+    await expect(productService.updateProduct(tenantAId, created.id, "   ", "SKU-A")).rejects.toThrow(
+      ValidationError
+    );
+  });
+
+  it("15. Product update requires a non-empty SKU", async () => {
+    const created = await productService.createProduct(tenantAId, "Name", "SKU-B");
+    await expect(productService.updateProduct(tenantAId, created.id, "Name", "   ")).rejects.toThrow(
+      ValidationError
+    );
+  });
+
+  it("16. Supplier update requires a non-empty name", async () => {
+    const created = await supplierService.createSupplier(tenantAId, "Name");
+    await expect(supplierService.updateSupplier(tenantAId, created.id, "   ")).rejects.toThrow(ValidationError);
+  });
+
+  it("17. a Product belonging to tenant B cannot be updated by a tenant A caller, even with tenant A's own tenantId in the body", async () => {
+    const tenantBProduct = await productService.createProduct(tenantBId, "Tenant B Product", "TENANT-B-SKU");
+    const res = await httpPatch(
+      `/products/${tenantBProduct.id}`,
+      { tenantId: tenantAId, name: "Hijacked Name", sku: "HIJACKED-SKU" },
+      authHeaders(userAId, tenantAId)
+    );
+    expect(res.status).toBe(404);
+
+    const unchanged = await prisma.product.findUniqueOrThrow({ where: { id: tenantBProduct.id } });
+    expect(unchanged.name).toBe("Tenant B Product");
+    expect(unchanged.sku).toBe("TENANT-B-SKU");
+  });
+
+  it("18. a Supplier belonging to tenant B cannot be updated by a tenant A caller, even with tenant A's own tenantId in the body", async () => {
+    const tenantBSupplier = await supplierService.createSupplier(tenantBId, "Tenant B Supplier");
+    const res = await httpPatch(
+      `/suppliers/${tenantBSupplier.id}`,
+      { tenantId: tenantAId, name: "Hijacked Supplier Name" },
+      authHeaders(userAId, tenantAId)
+    );
+    expect(res.status).toBe(404);
+
+    const unchanged = await prisma.supplier.findUniqueOrThrow({ where: { id: tenantBSupplier.id } });
+    expect(unchanged.name).toBe("Tenant B Supplier");
   });
 });

@@ -164,6 +164,43 @@ input:disabled {
   margin-top: 8px;
 }
 
+.catalog-list {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.catalog-list__title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6b7280;
+}
+
+.catalog-list__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.catalog-list__row--editing {
+  justify-content: flex-start;
+}
+
+.catalog-list__row input {
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.catalog-list__row .btn--link {
+  margin-bottom: 0;
+}
+
 .btn {
   border: 1px solid transparent;
   border-radius: 4px;
