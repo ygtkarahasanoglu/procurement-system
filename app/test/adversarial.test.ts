@@ -395,6 +395,40 @@ describe("Adversarial / hardening tests", () => {
         requestService.createRequest(malformedInput as unknown as requestService.CreateRequestInput)
       ).rejects.toThrow(ValidationError);
     });
+
+    // RL-C1: a ProcurementRequest may contain multiple distinct lines.
+    // Every other test in this suite exercises exactly one line — this is
+    // the first test anywhere in the repository to submit more than one,
+    // proving the already-implemented multi-line nested-create path
+    // actually persists every line correctly, not just the first.
+    it("RL-C1: a request with two distinct lines creates exactly one ProcurementRequest with both RequestLines persisted correctly", async () => {
+      const request = await requestService.createRequest({
+        tenantId,
+        createdById: procurementUserId,
+        lines: [
+          { productId: productAId, requestedQuantity: 10, unit: "EA" },
+          { productId: productBId, requestedQuantity: 25, unit: "BOX" },
+        ],
+      });
+
+      expect(request.lines).toHaveLength(2);
+
+      const persistedLines = await prisma.requestLine.findMany({ where: { requestId: request.id } });
+      expect(persistedLines).toHaveLength(2);
+      expect(persistedLines.every((l) => l.requestId === request.id)).toBe(true);
+
+      const lineA = persistedLines.find((l) => l.productId === productAId);
+      const lineB = persistedLines.find((l) => l.productId === productBId);
+      expect(lineA).toBeDefined();
+      expect(Number(lineA!.requestedQuantity)).toBe(10);
+      expect(lineA!.unit).toBe("EA");
+      expect(lineB).toBeDefined();
+      expect(Number(lineB!.requestedQuantity)).toBe(25);
+      expect(lineB!.unit).toBe("BOX");
+
+      const requestCount = await prisma.procurementRequest.count({ where: { id: request.id } });
+      expect(requestCount).toBe(1);
+    });
   });
 
   // ---------------------------------------------------------------
