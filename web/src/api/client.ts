@@ -4,11 +4,13 @@ import type {
   DecisionPackage,
   Principal,
   ProcurementRequest,
+  Product,
   PurchaseOrder,
   QuoteVersion,
   RecommendationRecord,
   RequestLineWorkflow,
   SourcingEvent,
+  Supplier,
   Tenant,
   TenantContext,
 } from "./types";
@@ -88,6 +90,9 @@ export const api = {
   listTenants: () => get<Tenant[]>("/tenants"),
   getTenantContext: (tenantId: string) => get<TenantContext>(`/tenants/${tenantId}/context`),
   listRequests: (tenantId: string) => get<ProcurementRequest[]>(`/requests?tenantId=${tenantId}`),
+
+  createProduct: (tenantId: string, name: string, sku: string) => post<Product>("/products", { tenantId, name, sku }),
+  createSupplier: (tenantId: string, name: string) => post<Supplier>("/suppliers", { tenantId, name }),
 
   createRequest: (input: {
     tenantId: string;

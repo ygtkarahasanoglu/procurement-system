@@ -8,6 +8,8 @@ import * as decisionService from "../services/decisionService";
 import * as approvalService from "../services/approvalService";
 import * as purchaseOrderService from "../services/purchaseOrderService";
 import * as queryService from "../services/queryService";
+import * as productService from "../services/productService";
+import * as supplierService from "../services/supplierService";
 import { Prisma } from "@prisma/client";
 import { AuthorizationError } from "../domain/authorization";
 import { NotFoundError, InvalidStateError, ApprovalRequiredError, CommercialDeviationError, ValidationError } from "../domain/errors";
@@ -189,6 +191,24 @@ export function createApp(authenticator: Authenticator) {
     "/request-lines/:id/workflow",
     wrap((req) =>
       queryService.getRequestLineWorkflow(assertTenantMatches(req.principal!, req.query.tenantId as string), req.params.id)
+    )
+  );
+
+  // Tenant-scoped reference-data creation. Exposes creation of the
+  // existing flat Product/Supplier records only — no identity/master-data
+  // subsystem (PI-C1-PI-C11, R3 remain untouched). tenantId is verified
+  // against the authenticated principal, exactly as every other mutating
+  // route below; name/sku are the only caller-controlled fields.
+  app.post(
+    "/products",
+    wrap((req) =>
+      productService.createProduct(assertTenantMatches(req.principal!, req.body.tenantId), req.body.name, req.body.sku)
+    )
+  );
+  app.post(
+    "/suppliers",
+    wrap((req) =>
+      supplierService.createSupplier(assertTenantMatches(req.principal!, req.body.tenantId), req.body.name)
     )
   );
 

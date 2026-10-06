@@ -3,6 +3,8 @@ import { api, LOGIN_URL } from "./api/client";
 import type { Principal, ProcurementRequest, Product, Supplier } from "./api/types";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { NewRequestForm } from "./components/NewRequestForm";
+import { NewProductForm } from "./components/NewProductForm";
+import { NewSupplierForm } from "./components/NewSupplierForm";
 import { RequestList } from "./components/RequestList";
 import { WorkflowPage } from "./components/WorkflowPage";
 import "./app.css";
@@ -122,6 +124,16 @@ function AuthenticatedApp({ principal, onLogout }: { principal: Principal; onLog
           />
         ) : (
           <>
+            <NewProductForm
+              tenantId={principal.tenantId}
+              onCreated={(product) => setProducts((prev) => [...prev, product])}
+              onError={setError}
+            />
+            <NewSupplierForm
+              tenantId={principal.tenantId}
+              onCreated={(supplier) => setSuppliers((prev) => [...prev, supplier])}
+              onError={setError}
+            />
             <NewRequestForm
               tenantId={principal.tenantId}
               actorUserId={principal.userId}
