@@ -6,6 +6,7 @@ import * as approvalService from "../src/services/approvalService";
 import * as requestService from "../src/services/requestService";
 import * as sourcingService from "../src/services/sourcingService";
 import * as quoteService from "../src/services/quoteService";
+import { assertActorAuthorized, AuthorizationError } from "../src/domain/authorization";
 
 // SEC-012 / R15 (docs/decisions/ratified.md) — runtime tenant guard.
 //
@@ -331,6 +332,36 @@ describe("SEC-012 / R15 — runtime tenant guard (db/client.ts tenantScoped)", (
       expect(fulfilled).toHaveLength(1);
       const openCount = await prisma.sourcingEvent.count({ where: { requestLineId: line.id, status: "OPEN" } });
       expect(openCount).toBe(1);
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // SEC-012/R15 completeness fix — the authorization hot-path
+  // (domain/authorization.ts's assertActorAuthorized, called from
+  // approvalService.approve, decisionService.freezeDecisionPackage, and
+  // purchaseOrderService.createPurchaseOrderFromApproval) now routes its
+  // own tenant-scoped User lookup through tenantScoped() instead of the
+  // bare prisma client.
+  // ---------------------------------------------------------------
+  describe("authorization hot-path (domain/authorization.ts assertActorAuthorized) is guard-wired", () => {
+    it("a same-tenant, correctly-roled actor still resolves normally (regression)", async () => {
+      const user = await assertActorAuthorized(tenantAId, userAId, ["procurement_user"]);
+      expect(user.id).toBe(userAId);
+    });
+
+    it("a same-tenant actor with the wrong role still throws AuthorizationError, not the guard (regression)", async () => {
+      await expect(assertActorAuthorized(tenantAId, userAId, ["approver"])).rejects.toThrow(AuthorizationError);
+    });
+
+    // A bare prisma.user.findFirst({ where: { id, tenantId: "" } }) would
+    // simply execute the query and return no match (NotFoundError) for an
+    // empty tenantId — it has no concept of "missing tenant context." Only
+    // the SEC-012 guard itself throws TenantContextMissingError before any
+    // query runs. Observing that error here, rather than NotFoundError, is
+    // direct proof that assertActorAuthorized is now routed through
+    // tenantScoped() and not the bare client.
+    it("an empty tenantId throws TenantContextMissingError (proves the guard, not a bare client, is wired in)", async () => {
+      await expect(assertActorAuthorized("", userAId, ["procurement_user"])).rejects.toThrow(TenantContextMissingError);
     });
   });
 

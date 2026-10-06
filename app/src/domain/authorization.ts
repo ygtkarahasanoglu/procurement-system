@@ -1,4 +1,4 @@
-import { prisma } from "../db/client";
+import { tenantScoped } from "../db/client";
 import { NotFoundError } from "./errors";
 
 // Minimum server-side authorization boundary for V1. This is
@@ -19,7 +19,8 @@ export class AuthorizationError extends Error {
 }
 
 export async function assertActorAuthorized(tenantId: string, userId: string, allowedRoles: string[]) {
-  const user = await prisma.user.findFirst({ where: { id: userId, tenantId } });
+  const db = tenantScoped(tenantId);
+  const user = await db.user.findFirst({ where: { id: userId, tenantId } });
   if (!user) {
     // Cross-tenant / nonexistent actor — do not distinguish the two.
     throw new NotFoundError("User", userId);
