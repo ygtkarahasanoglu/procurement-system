@@ -2205,3 +2205,212 @@ implementation; whether a stricter or different role set should ever
 govern external-communication actions generally; `AUTHN-5`
 provisioning-capability lifecycle questions. None of these may be
 inferred from `RFQ-S2` — see `open.md`.
+
+## RFQ Supplier Response Domain Decisions (RFQ-R1–RFQ-R5)
+
+Context: no part of the Supplier Response capability exists in code as of
+this ratification (no endpoint, no consumption logic, no QuoteVersion
+creation path from a supplier submission). These are documentation-only
+semantic ratifications made in advance of that implementation, following
+the same Fast Track Protocol discipline already used for `RFQ-S1`/`RFQ-S2`.
+They narrow *how* Supplier Response must behave once built; they do not
+build it.
+
+### RFQ-R1 — Supplier Response Trust Model (V1 Minimum)
+
+**Statement:** The minimum acceptable V1 trust mechanism for the Supplier
+Response action is an opaque, cryptographically random response token.
+Possession of a valid, unexpired, unconsumed token is sufficient to
+submit one response for the single RFQDispatch it is scoped to.
+
+**Evidence:** Independent Supplier Response architecture/security
+assessment (this repository's own history). Every commercial consequence
+of a Supplier Response is already gated downstream by the existing,
+ratified Decision + Approval chain (`APO-D1`/`APO-D2`) — a response never
+itself creates a Decision, never bypasses an Approval, never writes to
+an ERP, and never creates a PurchaseOrder directly. This existing
+downstream human-review gate is what makes a possession-only mechanism an
+acceptable minimum for *this specific action*, not a general judgment
+about supplier-authentication strength.
+
+**Scope:** Ratifies only that possession-only is *sufficient* for V1 — it
+does not rank, rule out, or design any stronger mechanism (supplier
+accounts, a supplier portal, multi-channel verification) for future use.
+
+**This decision does NOT close SEC-010 in general.** `SEC-010`
+(`docs/security/enforcement-matrix.md`) remains OPEN as a general,
+canonical status. This ratifies only an action-specific minimum
+sufficiency judgment for Supplier Response, nothing broader.
+
+**The token MUST NOT be interpreted as:** authentication; supplier
+identity proof; Execution Authority; Capability in the `C` sense (it is
+not "technical means," it is a scoped credential); a general-purpose
+authorization mechanism; or Tenant Binding in the `AUTHN-6`/`AUTHN-7`
+sense (tenant context is *derived* from the token's resolution, never
+independently asserted by any caller).
+
+**Explicit non-decisions:** supplier authentication beyond this V1
+minimum; a supplier portal/account model; any ranking of stronger
+mechanisms for future consideration. None of these may be inferred from
+`RFQ-R1` — see `open.md`.
+
+### RFQ-R2 — Token Is the Sole Client-Supplied Identifier
+
+**Statement:** The Supplier Response action accepts exactly one
+client-supplied identifier: the opaque response token. No other
+identifier — dispatch id, supplier id, quote id, tenant id, sourcing
+event id, or product id — may be accepted from the caller for the
+purpose of determining which record the submission concerns. The
+authoritative targeting chain is resolved entirely server-side, from the
+token alone:
+
+```
+opaque token → RFQDispatch → tenantId → Supplier → SourcingEvent → RequestLine → Product
+```
+
+**Evidence:** Independent Supplier Response architecture/security
+assessment. This is the direct extension, to an unauthenticated actor
+class, of the same discipline already ratified for every Principal-bound
+mutating route (tenant/actor identity is never trusted from a client
+claim) — here, in the absence of any Principal at all, the token is the
+sole, non-negotiable source of authoritative context.
+
+**Scope:** This is a tenant-isolation and object-targeting invariant, not
+an implementation detail. It constrains the *shape* of what the eventual
+endpoint may accept as input, regardless of its exact technical
+realization.
+
+**Explicit non-decisions:** the exact endpoint path, request format, or
+transport details. None of these are ratified here.
+
+**Implication — unsupported fields are rejected, not silently ignored:**
+a submission that includes any identifier this decision excludes (or any
+field outside the `RFQ-R5` structured payload) must be rejected outright,
+not silently accepted while quietly discarding the extra field. Silently
+ignoring such a field would make this boundary's actual behavior
+unverifiable to a caller and untestable as a security property; explicit
+rejection keeps the boundary observable and testable. This is a direct
+implementation implication of this decision's existing scope, not a new
+decision.
+
+### RFQ-R3 — Token Consumption Semantics
+
+**Statement:** A response token is consumed only upon a fully validated,
+successful Supplier Response submission. Consumption must be enforced by
+an atomic, conditional database operation — not a separate
+check-then-write sequence — such that of two concurrent submissions
+against the same token, exactly one can succeed; the other must observe
+a consumed/invalid outcome, indistinguishable from any other reason a
+token is not currently usable (nonexistent, expired, already consumed).
+
+**Non-consuming cases, explicitly:** viewing/retrieving the response
+form does not consume the token; a malformed submission does not; a
+submission that fails validation does not; an expired token is never
+consumable; an already-consumed token cannot be consumed again.
+
+**Evidence:** Direct extension of the already-ratified, already-proven
+`RFQDispatch` SEND claim mechanism (`RFQ-S1`'s own `PENDING→SENDING`
+atomic conditional update) to this new consumption point — the same
+concurrency-safety reasoning applies identically.
+
+**Field reuse, not new schema:** the existing `RFQDispatch.respondedAt`
+field may serve as the token-consumed marker. This ratification does
+**not** introduce, and explicitly rejects as unnecessary, any new
+redundant field (e.g., a separate boolean consumption flag) for this
+purpose.
+
+**Explicit non-decisions:** whether a *new* token may later be issued for
+a second attempt (resend/reissue policy); whether an already-submitted
+response may ever be revised or superseded (quote revision/requote
+policy). Neither is resolved by `RFQ-R3` — see `open.md`.
+
+**`RFQDispatch.status` is explicitly NOT part of this decision.** The
+sole authoritative consumption marker ratified here is `respondedAt`.
+`RFQ-R3` does not transition `status` to `RESPONDED` (or any other
+value), and must not be read as implicitly doing so merely because this
+decision exists — `status` is left exactly as `RFQ-S1` already left it.
+Whether the `RFQDispatch` lifecycle should ever transition `status` as a
+consequence of a consumed token is a separate, future architecture
+question, not decided by `RFQ-R3`.
+
+### RFQ-R4 — Transactional Submission
+
+**Statement:** Token consumption and QuoteVersion creation occur within
+one local database transaction. If submission validation fails, neither
+occurs. If QuoteVersion creation fails after validation passes, the
+transaction rolls back and the token remains unconsumed. The system must
+never reach a state where the token is consumed but no QuoteVersion
+exists, or a QuoteVersion exists but the token was never marked
+consumed.
+
+**Evidence:** Independent Supplier Response architecture/security
+assessment. Unlike RFQ SEND's own transaction boundary (which
+deliberately excludes the external `EmailSender` call, per `RFQ-S1`'s own
+Prepare≠Transmit reasoning), token consumption and QuoteVersion creation
+are both purely local database operations with no external call between
+them — full transactional atomicity is both possible and correct here,
+which is the opposite boundary choice from SEND for a principled,
+evidence-based reason, not an inconsistency.
+
+**Scope:** Any future supplier-facing acknowledgement (e.g., a
+confirmation email) is explicitly outside this transaction and outside
+this ratification's scope — it is not part of V1.
+
+### RFQ-R5 — V1 Supplier Response Data Scope
+
+**Statement:** The V1 Supplier Response accepts structured input for
+exactly the commercial fields `QuoteVersion` already has: quantity, unit,
+unit price, and currency. Delivery time, payment terms, validity period,
+free-form notes, attachments, and any document/email-based ingestion are
+explicitly out of scope for V1.
+
+**Validation posture:** reject, never coerce. A persisted value must be
+the same semantic value as the submitted value; validation failure
+rejects the submission outright rather than normalizing or guessing at
+intent (consistent with `SEC-011`, UNKNOWN-never-inferred).
+
+**Evidence:** Independent Supplier Response architecture/security
+assessment, directly against the current `QuoteVersion` schema (no
+delivery-time/payment-terms/notes/attachment field exists there today).
+
+**Explicit non-decisions:** whether/how those additional fields are ever
+added — that is a separate, future domain/architecture decision, not
+pre-decided or foreclosed by `RFQ-R5`.
+
+### Non-Goals (explicitly not ratified by RFQ-R1–RFQ-R5)
+
+A generic `Evidence` model; a generic `StructuredClaim`/`PersistedClaim`
+pipeline implementation; generic document ingestion; a raw email/PDF/
+Excel evidence pipeline; a generic raw-submission-capture field on any
+existing model (e.g., a `rawSubmission` JSON field on `SupplierQuote` or
+`QuoteVersion`). None of these are ratified now. Given `RFQ-R5`'s scope
+(a structured, four-field, reject-not-coerce V1 form), the persisted
+`QuoteVersion` value is already the same value the supplier submitted —
+no separate provenance-capture mechanism is being judged necessary for
+V1 by this ratification. If a concrete provenance/evidence need emerges
+later, it requires its own separate independent architecture assessment;
+this ratification does not pre-empt or foreclose that. `R11`'s own
+general conceptual status (`docs/decisions/ratified.md`) is unchanged.
+
+Also explicitly not ratified or closed by `RFQ-R1`–`RFQ-R5`: `SEC-010`'s
+general canonical status; RFQ resend/retry policy; stuck-`SENDING`
+recovery; token lifetime as business policy; token resend/reissue
+policy; quote revision/requote/versioning policy; email provider
+selection; provider message ID/delivery confirmation; provider
+timeout/unknown-outcome recovery; supplier authentication beyond the V1
+possession minimum; a supplier portal/account model; Execution
+Authority; RLS; a generic idempotency framework; `AuditLog`/`AuditEvent`.
+All remain exactly as recorded in `open.md`.
+
+### Canonical separation (must be preserved exactly)
+
+```
+Supplier Response capability ≠ Authentication ≠ Supplier Identity Proof
+  ≠ Execution Authority ≠ Human Approval ≠ Tenant Binding
+
+Approval ≠ Supplier Response Authorization
+```
+
+Accepting a Supplier Response does not mean a procurement decision has
+been approved, and does not itself authorize anything beyond the single,
+narrow act of recording that one response.

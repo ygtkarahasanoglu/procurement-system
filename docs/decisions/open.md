@@ -77,10 +77,13 @@ event should be treated as an error and corrected, not built upon.
   (see `03-data-model.md`), and how their provenance is established.
 - **Reconciliation schedule/scope** — how often, and over what scope, ERP
   reconciliation runs (see `03-data-model.md`, ERP sync section).
-- **RFQ response token single-use/replay** — whether a supplier's response
-  token may be used more than once, and how replay is detected/prevented,
-  once a response-capture endpoint exists (see `ratified.md`, `RFQ-S1`;
-  not resolved by the RFQ SEND lifecycle/authorization ratification).
+- **RFQ response token single-use/replay** — the *consumption mechanism*
+  (atomic, single-use-on-successful-submission) is now RATIFIED (see
+  `ratified.md`, `RFQ-R3`). Still OPEN: whether a *new* token may later be
+  issued for a second attempt (resend/reissue policy), and whether an
+  already-submitted response may ever be revised or superseded (tied to
+  the quote revision/requote policy item below) — neither is resolved by
+  `RFQ-R3`.
 - **RFQ response token lifetime (business policy)** — the current RFQ
   response-token lifetime is an implementation-only default
   (`app/src/services/rfqDispatchService.ts`), not a ratified business
