@@ -1,7 +1,7 @@
-import { tenantScoped } from "../db/client";
-import { NotFoundError, InvalidStateError } from "../domain/errors";
+import { tenantScoped, prisma } from "../db/client";
+import { NotFoundError, InvalidStateError, ValidationError } from "../domain/errors";
 import { assertActorAuthorized } from "../domain/authorization";
-import { requireId } from "../domain/validation";
+import { requireId, requireNonEmptyString, requirePositiveDecimal, requireUnit, requireCurrency } from "../domain/validation";
 import { generateRawToken, hashToken } from "../api/rfqResponseToken";
 import type { EmailSender } from "../api/emailSender";
 import { composeRfqEmail, buildResponseUrl } from "./rfqEmailComposer";
@@ -259,4 +259,140 @@ export async function sendRFQDispatch(
   }
 
   return { status: finalStatus };
+}
+
+// Supplier Response / Quote Ingestion V1 — RFQ-R1 through RFQ-R5
+// (docs/decisions/ratified.md). The only client-supplied identifier is
+// the opaque raw token itself (RFQ-R2); every other field a submission
+// could conceivably name (dispatchId, supplierId, quoteId, tenantId,
+// sourcingEventId, productId) is explicitly REJECTED, never silently
+// ignored — see RFQ-R2's own "Implication" clause. Token possession is
+// a capability, not authentication, not supplier identity proof, not
+// Execution Authority (RFQ-R1) — this function makes no claim about who
+// submitted the response, only that the submitter possessed a valid,
+// unexpired, unconsumed token scoped to exactly one RFQDispatch.
+const SUPPLIER_RESPONSE_ALLOWED_FIELDS = new Set(["quantity", "unit", "unitPrice", "currency"]);
+
+export async function submitSupplierResponse(rawToken: string, payload: unknown) {
+  const validRawToken = requireNonEmptyString(rawToken, "token");
+
+  // RFQ-R2's explicit implication: unsupported fields are rejected, not
+  // silently discarded — this is what makes the targeting boundary
+  // observable/testable rather than merely assumed. No provided key may
+  // fall outside the four RFQ-R5 commercial fields, for any reason.
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new ValidationError("Request body must be an object.");
+  }
+  const providedFields = Object.keys(payload as Record<string, unknown>);
+  const unsupportedFields = providedFields.filter((field) => !SUPPLIER_RESPONSE_ALLOWED_FIELDS.has(field));
+  if (unsupportedFields.length > 0) {
+    throw new ValidationError(
+      `Unsupported field(s): ${unsupportedFields.join(", ")}. Only quantity, unit, unitPrice, and currency are accepted — ` +
+        `the target RFQDispatch/tenant/supplier/product are derived exclusively from the response token, never from the request body.`
+    );
+  }
+  const body = payload as Record<string, unknown>;
+
+  // Bare prisma — the only legitimate use anywhere in this function.
+  // Mirrors session.ts's own findActiveSessionByRawToken precedent
+  // exactly: tenantId is not yet known (it can only be learned from this
+  // lookup's own result), so tenantScoped() cannot be constructed before
+  // it. responseTokenHash is globally @unique (Batch 1), so this can
+  // resolve at most one row regardless of tenant — no cross-tenant
+  // ambiguity is possible at this step.
+  const tokenHash = hashToken(validRawToken);
+  const dispatch = await prisma.rFQDispatch.findUnique({
+    where: { responseTokenHash: tokenHash },
+    include: { sourcingEvent: { include: { requestLine: true } } },
+  });
+
+  // Generic, indistinguishable rejection for every invalid-token cause —
+  // nonexistent, expired, or already consumed. Never reveals which (no
+  // token-enumeration signal), exactly mirroring this codebase's
+  // existing not-found discipline (TenantMismatchError, NotFoundError).
+  const tokenIsUsable =
+    dispatch !== null && dispatch.respondedAt === null && dispatch.tokenExpiresAt !== null && dispatch.tokenExpiresAt > new Date();
+  if (!dispatch || !tokenIsUsable) {
+    throw new NotFoundError("RFQDispatch", "token");
+  }
+
+  // Defense-in-depth tenant invariant (same discipline as sendRFQDispatch
+  // above): the nested `include` above is not independently re-checked
+  // by the R15 guard (it was fetched via bare prisma, before tenant
+  // context existed at all). createRFQDispatch's own creation-time
+  // validation, and the absence of any tenantId-mutating update/delete
+  // path anywhere in this codebase, already guarantee this cannot
+  // diverge in practice — checked explicitly anyway, since this is an
+  // unauthenticated boundary with a real external submitter.
+  if (dispatch.tenantId !== dispatch.sourcingEvent.tenantId || dispatch.tenantId !== dispatch.sourcingEvent.requestLine.tenantId) {
+    throw new Error(`Internal inconsistency: RFQDispatch ${dispatch.id}'s related data does not all belong to tenant ${dispatch.tenantId}.`);
+  }
+
+  // RFQ-R5: reject, never coerce. Same helpers quoteService.submitQuote
+  // already uses for the identical manually-entered-quote fields — no
+  // new business policy (MOQ, currency allowlist, custom precision) is
+  // introduced here.
+  const quotedQuantity = requirePositiveDecimal(body.quantity, "quantity");
+  const unit = requireUnit(body.unit);
+  const unitPrice = requirePositiveDecimal(body.unitPrice, "unitPrice");
+  const currency = requireCurrency(body.currency);
+
+  const db = tenantScoped(dispatch.tenantId);
+
+  // RFQ-R4: token consumption and QuoteVersion creation in one local
+  // transaction — unlike sendRFQDispatch's own transaction boundary
+  // (which deliberately excludes the external EmailSender call), there
+  // is no external call anywhere in this flow, so full atomicity is both
+  // possible and correct here.
+  return db.$transaction(async (tx) => {
+    // RFQ-R3: the sole authoritative consumption check — atomic,
+    // conditional, not a prior SELECT followed by a separate UPDATE. Of
+    // two concurrent submissions against the same token, exactly one
+    // can ever satisfy this WHERE clause.
+    const claim = await tx.rFQDispatch.updateMany({
+      where: {
+        id: dispatch.id,
+        tenantId: dispatch.tenantId,
+        responseTokenHash: tokenHash,
+        respondedAt: null,
+        tokenExpiresAt: { gt: new Date() },
+      },
+      data: { respondedAt: new Date() },
+    });
+    if (claim.count !== 1) {
+      throw new NotFoundError("RFQDispatch", "token");
+    }
+
+    // RFQ-R3's own clarification: respondedAt is the sole authoritative
+    // consumption marker. RFQDispatch.status is deliberately NOT written
+    // here — it is left exactly as RFQ-S1 already left it; no RESPONDED
+    // (or any other) status transition is part of this ratification.
+
+    // Mirrors quoteService.submitQuote's own creation shape exactly,
+    // with every identifier (sourcingEventId, supplierId, productId)
+    // derived from the token-resolved RFQDispatch/RequestLine, never
+    // from the request body. rfqDispatchId traces this response back to
+    // the dispatch that solicited it (the existing, already-nullable
+    // SupplierQuote.rfqDispatchId field from Batch 1).
+    return tx.supplierQuote.create({
+      data: {
+        tenantId: dispatch.tenantId,
+        sourcingEventId: dispatch.sourcingEventId,
+        supplierId: dispatch.supplierId,
+        rfqDispatchId: dispatch.id,
+        versions: {
+          create: {
+            tenantId: dispatch.tenantId,
+            versionNumber: 1,
+            productId: dispatch.sourcingEvent.requestLine.productId,
+            quotedQuantity,
+            unit,
+            unitPrice,
+            currency,
+          },
+        },
+      },
+      include: { versions: true },
+    });
+  });
 }

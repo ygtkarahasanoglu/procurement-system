@@ -121,6 +121,22 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
   // below (unchanged), remains exactly as protected as before.
   app.use("/auth", createAuthRouter());
 
+  // Supplier Response / Quote Ingestion V1 (RFQ-R1–RFQ-R5,
+  // docs/decisions/ratified.md). Mounted here, BEFORE the Principal
+  // authentication middleware below, for the same reason /auth is: this
+  // route has no browser session and must be reachable by an external
+  // party with no Principal at all. The opaque response token in the
+  // path is the sole authoritative identifier (RFQ-R2) — req.body is
+  // never trusted for targeting, only for the four RFQ-R5 commercial
+  // fields, and rfqDispatchService.submitSupplierResponse itself rejects
+  // any other field outright. This is the only unauthenticated carve-out
+  // this route introduces — every other route remains exactly as
+  // Principal-protected as before.
+  app.post(
+    "/rfq-responses/:token",
+    wrap((req) => rfqDispatchService.submitSupplierResponse(req.params.token, req.body))
+  );
+
   // Authentication boundary (AUTH-1/2/3/5/6 planning, Step 4). Invokes the
   // injected Authenticator (read from app.locals, per the Step 3 seam)
   // once per request; a null result is rejected as unauthenticated before
