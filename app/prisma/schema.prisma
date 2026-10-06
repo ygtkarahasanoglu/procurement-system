@@ -30,6 +30,7 @@ model Tenant {
   requests         ProcurementRequest[]
   requestLines     RequestLine[]
   sourcingEvents   SourcingEvent[]
+  rfqDispatches    RFQDispatch[]
   supplierQuotes   SupplierQuote[]
   quoteVersions    QuoteVersion[]
   recommendations  RecommendationRecord[]
@@ -96,9 +97,15 @@ model Supplier {
   tenantId  String
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
   name      String
+  // Communication address for a future RFQ email dispatch. Nullable, no
+  // uniqueness, no identity/authentication/verification semantics — see
+  // the RFQ assessment (docs/decisions remain unchanged by this batch):
+  // SEC-010 supplier authentication stays OPEN and is not addressed here.
+  email     String?
   createdAt DateTime @default(now())
 
   supplierQuotes SupplierQuote[]
+  rfqDispatches  RFQDispatch[]
 
   @@index([tenantId])
 }
@@ -157,12 +164,49 @@ model SourcingEvent {
   status        String      @default("OPEN") // OPEN | CLOSED
   createdAt     DateTime    @default(now())
 
+  rfqDispatches    RFQDispatch[]
   supplierQuotes   SupplierQuote[]
   recommendations  RecommendationRecord[]
   decisionPackages DecisionPackage[]
 
   @@index([tenantId])
   @@index([requestLineId])
+}
+
+// A single supplier-facing RFQ dispatch under a SourcingEvent — R1 ("RFQ
+// is modeled as SourcingEvent + RFQDispatch x N", docs/decisions/
+// ratified.md) and 02-domain-model.md §7.3. This is the implementation
+// of an already-ratified concept, not a new domain decision.
+//
+// Schema-only in this batch: no service, token generation/validation,
+// response endpoint, or email sending exist yet. responseTokenHash
+// stores only a SHA-256 hash, mirroring Session's own discipline
+// (app/src/api/session.ts) — the raw token itself will exist only
+// outside persistence, in a future batch; this batch does not implement
+// hashing or token generation. Supplier authentication (SEC-010), resend
+// policy, and quote resubmission/versioning all remain OPEN
+// (docs/decisions/open.md) and are not resolved by this schema — in
+// particular, no uniqueness constraint here implies "one dispatch per
+// supplier/SourcingEvent" or "no resend".
+model RFQDispatch {
+  id                String        @id @default(uuid())
+  tenantId          String
+  tenant            Tenant        @relation(fields: [tenantId], references: [id])
+  sourcingEventId   String
+  sourcingEvent     SourcingEvent @relation(fields: [sourcingEventId], references: [id])
+  supplierId        String
+  supplier          Supplier      @relation(fields: [supplierId], references: [id])
+  status            String        @default("PENDING") // PENDING | SENT | SEND_FAILED | RESPONDED
+  responseTokenHash String?       @unique
+  tokenExpiresAt    DateTime?
+  respondedAt       DateTime?
+  createdAt         DateTime      @default(now())
+
+  supplierQuotes SupplierQuote[]
+
+  @@index([tenantId])
+  @@index([sourcingEventId])
+  @@index([supplierId])
 }
 
 // A quote "header" from one supplier for one SourcingEvent. The
@@ -176,12 +220,19 @@ model SupplierQuote {
   sourcingEvent   SourcingEvent @relation(fields: [sourcingEventId], references: [id])
   supplierId      String
   supplier        Supplier      @relation(fields: [supplierId], references: [id])
+  // Nullable: traces a quote back to the RFQDispatch that solicited it,
+  // once that path exists (future batch). The existing manually-entered
+  // quote flow (quoteService.submitQuote) remains schema-compatible and
+  // unchanged — it simply leaves this null, exactly as it does today.
+  rfqDispatchId   String?
+  rfqDispatch     RFQDispatch?  @relation(fields: [rfqDispatchId], references: [id])
   createdAt       DateTime      @default(now())
 
   versions QuoteVersion[]
 
   @@index([tenantId])
   @@index([sourcingEventId])
+  @@index([rfqDispatchId])
 }
 
 // Immutable once created (03-data-model.md). V1 only ever creates
