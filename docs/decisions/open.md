@@ -29,25 +29,35 @@ event should be treated as an error and corrected, not built upon.
 - **R9 exact mechanism** — the requirement that control-weakening actions be
   authorized/auditable/distinguishable is RATIFIED (see `ratified.md`); the
   exact mechanism (e.g., dual control, specific approval workflow) is OPEN.
-- **AUTHN-5 provisioning capability — bootstrap and exact naming** —
-  the production user-provisioning mechanism's semantic shape, the
-  provisioning-authority boundary (separate from procurement-domain
-  roles, tenant-scoped when exercised through the application, a
-  domain-specific capability rather than a universal Authority entity,
-  distinct from the existing AUTHN-12 operator path), and the
-  capability's minimal representation shape (an additive Boolean on
-  `User`, defaulting to `false`, checked by a dedicated provisioning-
-  specific authorization function rather than `assertActorAuthorized`
-  or a generic `authorize()`) are all RATIFIED (see `ratified.md`,
-  AUTHN-5). Still OPEN: the exact Boolean field name; the exact
-  authorization function name; the exact route/UI; whether one or
-  multiple provisioning-capable `User`s are permitted per tenant;
-  whether every tenant automatically receives one; **how the first
-  provisioning-capable `User` for a tenant is bootstrapped** (the
-  repository has no application-level mechanism for this today —
-  AUTHN-12's out-of-band operator/database path remains the only
-  existing mechanism, unchanged); whether a tenant-administrator
-  concept is introduced; and who may grant/revoke the capability.
+- **AUTHN-5 provisioning capability — naming, operator access, and
+  lifecycle** — the production user-provisioning mechanism's semantic
+  shape, the provisioning-authority boundary (separate from
+  procurement-domain roles, tenant-scoped when exercised through the
+  application, a domain-specific capability rather than a universal
+  Authority entity, distinct from the existing AUTHN-12 operator
+  path), the capability's minimal representation shape (an additive
+  Boolean on `User`, defaulting to `false`, checked by a dedicated
+  provisioning-specific authorization function rather than
+  `assertActorAuthorized` or a generic `authorize()`), the bootstrap
+  semantic direction (the first provisioning-capable `User` per tenant
+  is established through an explicit, out-of-band, operator-level
+  action outside the application's normal authorization model,
+  distinct from AUTHN-12, introducing no tenant-admin role or
+  platform-operator Principal), and the bootstrap implementation form
+  (a standalone TypeScript operator script under `app/src/scripts/`,
+  independent of AUTHN-12's `provisionExternalIdentity.ts`, not seed
+  tooling, not an HTTP route, not a generic admin CLI/framework) are
+  all RATIFIED (see `ratified.md`, AUTHN-5). Still OPEN: the exact
+  Boolean field name; the exact authorization function name; the exact
+  route/UI; the exact script/function/npm-script name; the exact CLI
+  argument syntax; idempotency/repeat-run behavior; who operationally
+  holds the operator access used for bootstrap, and how that access is
+  managed; whether one or multiple provisioning-capable `User`s are
+  permitted per tenant; whether every tenant automatically receives
+  one; whether a tenant-administrator concept is introduced; and who
+  may grant/revoke the capability after bootstrap (the subsequent
+  lifecycle, as distinct from the first grant, which is now settled
+  above).
 - **RLS** — whether Row-Level Security is adopted as a defense-in-depth
   layer alongside service-layer authorization (R10 in `ratified.md` settles
   only that service-layer authorization is primary).

@@ -4,11 +4,15 @@ import { PrismaClient } from "@prisma/client";
 // sufficient; connection pooling tuning is explicitly out of scope.
 //
 // Still exported and used, unchanged, by every non-service consumer
-// that already imported it before SEC-012/R15 (AUTHN's own modules —
-// session.ts, sessionAuthenticator.ts, externalIdentity.ts,
-// domain/authorization.ts — plus seed.ts and the pilot provisioning
-// script). None of those is a Procurement Core service and none is
-// touched by this decision.
+// that legitimately operates outside any tenant/request context:
+// AUTHN's own modules — session.ts, sessionAuthenticator.ts,
+// externalIdentity.ts — plus the out-of-band operator scripts
+// (seed.ts, the pilot provisioning script provisionExternalIdentity.ts,
+// and the AUTHN-5 bootstrap script grantProvisioningCapability.ts).
+// None of those is a Procurement Core service and none is touched by
+// this decision. domain/authorization.ts previously appeared in this
+// list but no longer does: it now routes its own tenant-scoped User
+// lookup through tenantScoped() (the SEC-012/R15 completeness fix).
 export const prisma = new PrismaClient();
 
 // ---------------------------------------------------------------------

@@ -1672,31 +1672,101 @@ level provisioning capability's minimal representation is ratified:
    Application-level provisioning MUST NOT cross tenant boundaries. No
    new universal/global capability model is introduced.
 
-**Important bootstrap constraint:** Adding this Boolean does not, by
-itself, solve the first-user provisioning problem. The repository
-currently has no application-level mechanism for granting the first
-provisioning capability for a tenant. The existing `AUTHN-12`
-out-of-band operator/database path remains exactly as previously
-ratified and unchanged. **The bootstrap/grant mechanism for the first
-provisioning-capable `User` per tenant remains OPEN.**
+**Bootstrap — ratified 2026-10-06:** The first application-level
+provisioning-capable `User` for a tenant SHALL be established through
+an explicit out-of-band operator-level action that is outside the
+application's normal authorization model. This is evidenced directly
+by this repository's own precedent: all foundational `Tenant` and
+`User` creation already happens out-of-band (there is no
+application-level tenant-creation or user-creation workflow), every
+`User`'s provisioning capability defaults to `false`, and an
+application-level actor therefore cannot grant the first instance of
+this capability without already holding the very authority it would
+be bootstrapping. An out-of-band operator action breaks this
+dependency without introducing any new application-level privileged
+identity or role.
+
+The bootstrap action SHALL be:
+
+1. explicit;
+2. operator-controlled;
+3. outside the application's normal authenticated-user authorization
+   model;
+4. fail-closed;
+5. applicable only to an already-existing `Tenant`/`User`;
+6. incapable of creating a `User` or `Tenant` implicitly;
+7. incapable of creating an OIDC identity implicitly;
+8. not reachable through the normal login/authentication flow;
+9. not exposed as a normal tenant-user API/UI capability;
+10. separate from the ongoing grant/revoke mechanism, which remains
+    OPEN — the bootstrap action establishes the initial capability
+    state only; it does not define that capability's subsequent
+    lifecycle.
+
+**No implicit role:** This decision does not introduce a tenant-admin
+role, a platform-operator `Principal`, a provisioning role, a generic
+Authority entity, a generic permissions framework, or a new
+application authorization layer. The operator-level nature of the
+bootstrap action is an operational boundary, not a new
+application-domain role.
+
+**AUTHN-12 boundary (bootstrap):** This decision does not modify or
+generalize `AUTHN-12`. `AUTHN-12` remains exactly as previously
+ratified: it handles verified `(issuer, subject)` → existing-`User`
+identity linking; it remains the pilot provisioning mechanism; it does
+not become the bootstrap-capability mechanism; it does not establish
+an application role; it does not establish a generic
+operator-authority concept. The future bootstrap mechanism MUST be a
+distinct mechanism from `AUTHN-12`, even though it may follow similar
+operational properties (explicit, fail-closed, not login-reachable).
+
+**Bootstrap implementation form — ratified 2026-10-06:** The first
+application-level provisioning-capable `User` for a tenant is
+established by an explicit, operator-controlled action implemented as
+a standalone TypeScript operator script under `app/src/scripts/`,
+independent of and distinct from `AUTHN-12`'s
+`provisionExternalIdentity.ts` script/function. `AUTHN-12`'s
+script/function is not extended or generalized for this
+capability-bootstrap purpose. Seed tooling (`seed.ts`) is not used for
+this purpose. No internal authenticated HTTP/API/UI route is created
+for this action. No generic administrative CLI/framework is created.
+This action grants the capability on an already-existing `User`
+only — it does not create a `Tenant` or `User`, and does not perform
+identity provisioning (`(issuer, subject)` linking remains exclusively
+the production mechanism's and `AUTHN-12`'s concern, unaffected by
+this entry). The action remains explicit, fail-closed, and
+operator-controlled, consistent with the bootstrap semantic properties
+already ratified above.
+
+**Explicit non-decisions (implementation form):** The exact script
+file name, exact function name, exact npm-script name, exact CLI
+argument syntax, idempotency/repeat-run behavior (whether granting an
+already-`true` capability succeeds silently or fails closed), operator
+access management (who holds the credentials needed to run it, and how
+that access itself is governed), and the subsequent grant/revoke
+lifecycle all remain OPEN (see `docs/decisions/open.md`).
 
 **Scope of this ratification:** This ratifies the provisioning
-mechanism's *semantic shape*, the provisioning-authority boundary, and
-the capability's minimal representation shape above — not the
+mechanism's *semantic shape*, the provisioning-authority boundary, the
+capability's minimal representation shape, the bootstrap semantic
+direction, and the bootstrap implementation form above — not the
 complete user-management architecture, and not any specific code,
-schema, or route. It does **not** determine: the exact Boolean field
-name; the exact authorization function name; the exact HTTP route; the
-exact UI; the exact migration name; whether one or multiple
-provisioning-capable `User`s are permitted per tenant; whether every
-tenant automatically receives a provisioning-capable `User`; how the
-first provisioning-capable `User` is bootstrapped; whether a tenant
-administrator concept is introduced; who is permitted to grant/revoke
-the Boolean capability; invitation/email infrastructure; bulk
-provisioning; SCIM/directory integration; user disable/re-enable
-semantics; session revocation semantics; identity re-linking
-semantics; multi-tenant membership (`R5`); or audit-log implementation.
-**All of the above remain tracked separately as OPEN** (see
-`docs/decisions/open.md`).
+schema, route, or exact script content. It does **not** determine: the
+exact Boolean field name; the exact authorization function name; the
+exact HTTP route; the exact UI; the exact migration name; the exact
+script/function/npm-script name; the exact CLI argument syntax;
+idempotency/repeat-run behavior; who operationally holds the operator
+access used to perform the bootstrap action, or how that access is
+managed; whether one or multiple provisioning-capable `User`s are
+permitted per tenant; whether every tenant automatically receives a
+provisioning-capable `User`; whether a tenant administrator concept is
+introduced; who is permitted to grant/revoke the Boolean capability
+after bootstrap (the subsequent lifecycle); invitation/email
+infrastructure; bulk provisioning; SCIM/directory integration; user
+disable/re-enable semantics; session revocation semantics; identity
+re-linking semantics; multi-tenant membership (`R5`); or audit-log
+implementation. **All of the above remain tracked separately as OPEN**
+(see `docs/decisions/open.md`).
 
 **Relationship to AUTHN-12:** `AUTHN-12` remains exactly as previously
 ratified — limited to the specific one-user pilot bootstrap — and does
@@ -1713,18 +1783,26 @@ otherwise) remains an implementation choice within the semantic rule now
 ratified — not itself decided here.
 
 **Evidence:** Explicit human ratification via conversation, following
-three independent read-only assessments of AUTHN-5 production user
+five independent read-only assessments of AUTHN-5 production user
 provisioning: (1) provisioning-mechanism options (identity lifecycle,
 security risk comparison of candidate mechanisms, current-code fit,
 enterprise SaaS onboarding reality, and a neutral mechanism comparison);
 (2) the administrative actor/role question (the security boundary of
 provisioning, tenant-isolation scoping alternatives, a role-vs-
 capability-vs-separate-authority analysis, and an enterprise
-operating-model analysis); and (3) the capability-representation
+operating-model analysis); (3) the capability-representation
 implementation assessment (tracing `assertActorAuthorized`'s actual
 mechanism and call sites, comparing representation alternatives against
 migration/runtime/coupling criteria, and security-failure-mode
-analysis), 2026-10-06.
+analysis); (4) the first-capability bootstrap assessment (repository
+evidence that all foundational Tenant/User creation is already
+out-of-band, a neutral comparison of bootstrap candidate mechanisms, and
+an analysis of the bootstrap circular-dependency and the AUTHN-12
+boundary); and (5) the bootstrap implementation-form assessment
+(repository evidence on existing operator-script conventions, a neutral
+comparison of implementation-form candidates against the fixed
+bootstrap baseline, and a comparison against `AUTHN-12`'s existing
+script), 2026-10-06.
 
 ### AUTHN-6 — Principal Contract Remains Unextended
 
