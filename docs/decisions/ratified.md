@@ -79,6 +79,68 @@ individual LLM calls — an "agent" in this system's vocabulary may be
 implemented as multiple calls, a single call, or a non-LLM deterministic
 step, as long as it fulfills the logical capability.
 
+### R15 — SEC-012 Runtime Tenant Guard (Defense-in-Depth Mechanism)
+
+**Statement:** Service-layer tenant enforcement (the existing pattern of
+every tenant-scoped service function requiring and applying an explicit
+`tenantId`) remains the **primary** enforcement mechanism, consistent with
+`R10`. In addition, the authoritative tenant context — sourced from the
+authenticated `Principal.tenantId` (`AUTHN-6`/`AUTHN-7`) — will be carried,
+explicitly, into a tenant-bound Prisma client/extension layer that provides
+a runtime defense-in-depth backstop for tenant-scoped Prisma operations,
+addressing `SEC-012` (`docs/security/enforcement-matrix.md`).
+
+This mechanism:
+
+- fails closed if no tenant context is supplied to it;
+- fails closed if a tenant-scoped operation lacks the required tenant
+  scope;
+- fails closed if a query's tenantId does not match the authoritative
+  tenant context;
+- does not apply to models explicitly outside tenant scope per the
+  current Prisma schema — `Tenant`, `ExternalIdentity`, and `Session`
+  carry no `tenantId` column (see `03-data-model.md`) and are not
+  retroactively treated as tenant-scoped by this decision;
+- performs its enforcement check deterministically against the query's
+  own arguments/context, without issuing any additional Prisma/database
+  query of its own;
+- is not solely dependent on HTTP request context as its carrier — the
+  design must allow explicit `tenantId` propagation into future non-HTTP
+  execution contexts (background workers, the future ERP machine
+  identity class of `AUTHN-8`), exactly as today's explicit service-layer
+  parameters already do;
+- does not use AsyncLocalStorage or any other implicit request/execution-
+  context propagation as its mechanism — that approach is not ratified by
+  this decision;
+- does not select, adopt, or reject Row-Level Security — `RLS`'s own OPEN
+  status (`open.md`) is unchanged by this decision;
+- does not extend automatic enforcement to raw SQL (`$queryRaw`/
+  `$executeRaw`) — none exists in the repository as of this ratification;
+  any future raw SQL use requires its own, separate security control, not
+  assumed to be covered here.
+
+**Scope:** Ratifies only the architectural *shape* of the SEC-012
+backstop — that it exists, that service-layer enforcement remains
+primary, and the explicit constraints above. Does not ratify an exact
+Prisma extension API, helper/factory naming, file structure, extension
+registration details, or transaction implementation details — those
+remain implementation choices made within this decision's boundaries.
+
+**Explicit non-decisions:** Does not modify `Principal` (`AUTHN-6`), API
+tenant binding (`AUTHN-7`, `assertTenantMatches`), or any existing
+service-layer function signature. Does not resolve `RLS`, `R9`, or any
+other OPEN item. Does not implement Execution Authority or any ERP
+identity model.
+
+**Relationship to R10:** This decision operationalizes `R10`'s already-
+ratified "service-layer primary, database-level controls at most
+defense-in-depth" principle — it does not supersede or reinterpret `R10`.
+
+**Evidence:** Explicit human ratification via conversation, following two
+independent read-only technical assessments of `SEC-012` (enforcement-
+mechanism comparison, and exact tenant-context-propagation analysis),
+2026-10-06.
+
 ## Authorization semantics
 
 ### M2

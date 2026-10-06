@@ -20,7 +20,7 @@ architectural/design maturity of each control, not code coverage.
 | SEC-009 | Supplier content treated as untrusted input | High | RATIFIED (principle) |
 | SEC-010 | Supplier authentication signal (how confidently a supplier response is attributed to the real supplier) | High | **OPEN / DESIGN GAP** |
 | SEC-011 | UNKNOWN-never-inferred enforcement | High | RATIFIED (principle) |
-| SEC-012 | Runtime tenant guard (enforcing tenant match at runtime, not just at query construction) | High | **OPEN / DESIGN GAP** |
+| SEC-012 | Runtime tenant guard (enforcing tenant match at runtime, not just at query construction) | High | **OPEN / DESIGN GAP** — mechanism now RATIFIED (`R15`, `docs/decisions/ratified.md`); implementation not yet built |
 | SEC-013 | Human authorization required for RFQ/PO/ERP writes in MVP | High | RATIFIED (principle), default-on absent separate ratification |
 | SEC-014 | Prepare/transmit separation | High | RATIFIED (principle) |
 | SEC-015 | Memory exclusion list (what must never enter ProcurementMemory / AI context) | Medium | **OPEN / DESIGN GAP** — exact exclusion list not specified |
