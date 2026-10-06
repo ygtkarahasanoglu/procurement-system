@@ -1402,7 +1402,7 @@ as deciding:
 
 None of these items is closed, narrowed, or resolved by CT-A2.
 
-## Human Authentication Architecture Decisions (AUTHN-1–AUTHN-11)
+## Human Authentication Architecture Decisions (AUTHN-1–AUTHN-12)
 
 **Naming note:** this family establishes a new grouped prefix, `AUTHN-`
 (Authentication), distinct from both the existing `Authority`/`Authorization`
@@ -1636,6 +1636,56 @@ Wildcard origin access must not remain in production.
 cookie's `SameSite` setting (see `AUTHN-4`) remain implementation/
 deployment concerns, not decided here.
 
+### AUTHN-12 — Pilot Operator Provisioning (Google OIDC Pilot, First User Only)
+
+**Statement:** For the Google OIDC pilot's first user, the `(issuer,
+subject) -> User.id` mapping is established by a human operator,
+out-of-band from any OIDC login attempt, via a controlled, one-time
+operator action (a CLI/script or an equivalent manual, reviewable
+mechanism — not an HTTP endpoint). This mechanism:
+
+- maps a verified `(issuer, subject)` pair to an **already-existing**
+  `User` record only — it never creates a new `User`.
+- never creates a new `Tenant`.
+- fails closed if the referenced `User` does not already exist.
+- fails closed if the referenced `Tenant` does not already exist.
+- fails closed if the `(issuer, subject)` pair is already mapped to a
+  different `User` (the existing `@@unique([issuer, subject])`
+  constraint is never worked around).
+- is never triggered by, or reachable from, a login attempt — this is
+  not JIT provisioning and not self-service signup.
+- never uses email, or any claim other than `(issuer, subject)`, as an
+  identity key.
+- introduces no internal admin API and no admin UI.
+- introduces no new domain concept (no "ProvisioningAuthority,"
+  "AdminAuthority," or equivalent). Who may run this operator action is
+  an operational/access-control question (who holds database/operator
+  access for this one-time action) — not a new domain authorization
+  model, and not Execution Authority (`B2`) or ordinary domain Approval
+  under another name.
+
+**Scope:** Ratifies only the pilot's specific first-user bootstrap
+approach for exactly one user. Does not select, narrow, or imply a
+production provisioning mechanism for N users — CLI, admin workflow,
+invitation flow, or otherwise.
+
+**Explicit non-decisions:** Does not modify `Principal` (`AUTHN-6`), the
+`(issuer, subject)` identity key (`AUTHN-2`), tenant isolation, or
+Execution Authority. Does not establish precedent for how the eventual
+production provisioning mechanism will be chosen.
+
+**Relationship to AUTHN-5:** `AUTHN-5`'s ratified statement — pre-provisioned
+users, no JIT, no self-service registration, exact provisioning mechanism
+not decided — is unchanged and remains fully binding. This entry narrows
+nothing about `AUTHN-5`'s open status: it confirms only that the pilot's
+single-user bootstrap already satisfies `AUTHN-5`'s existing constraints,
+without resolving which mechanism production will eventually use for
+more than one user. `AUTHN-5`'s own text is not edited by this entry.
+
+**Evidence:** Explicit human ratification via conversation, 2026-10-06,
+following an independent read-only assessment of pilot provisioning
+options.
+
 ### Minimal Implementation Boundary (descriptive, not itself a ratified sub-decision)
 
 The future implementation *may* include: a concrete `Authenticator`
@@ -1675,3 +1725,14 @@ future machine identity (`AUTHN-7`, `AUTHN-8`) must be preserved exactly
 as stated once implementation begins. The repository remains in an
 implementation-ready, not implementation-complete, state after this
 ratification.
+
+**`AUTHN-12` addendum (2026-10-06):** `AUTHN-1`–`AUTHN-11` above was
+implemented in full by this point (OIDC login/callback/logout, session
+persistence, external identity mapping, `/auth/me`, tenant scoping, CORS
+restriction, frontend credential transport — all shipped). `AUTHN-12` was
+ratified separately and later, after a real Google OIDC pilot client was
+configured and a real browser login correctly reached the expected
+"unknown external identity" outcome. `AUTHN-12` is scoped exclusively to
+bootstrapping that one pilot user; it does not reopen, extend, or
+implement any part of `AUTHN-1`–`AUTHN-11`, and `AUTHN-5`'s open
+production-mechanism question is unchanged by it.
