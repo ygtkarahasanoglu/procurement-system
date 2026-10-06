@@ -5,12 +5,18 @@ Procurement Automation ("Procurement Copilot") system.
 
 ## Current status
 
-**Architecture / documentation bootstrap.** No implementation exists yet in this
-repository: no application code, no database migrations, no schemas, no API
-implementation, no tests, no infrastructure. This repository currently contains
-architecture and decision documentation only, recovered from prior architecture
-analysis conversations and recorded here so it survives independently of any
-single conversation transcript.
+This repository contains both the **canonical architecture/decision
+documentation** (`docs/`, recovered from prior architecture analysis
+conversations and recorded here so it survives independently of any single
+conversation transcript) and a **real, running implementation** of one
+bounded vertical slice: `app/` is an Express/Prisma/PostgreSQL backend with
+OpenID Connect (OIDC + PKCE) authentication and server-side sessions; `web/`
+is a React frontend wired to that authenticated backend. Automated tests
+exist and pass against a real PostgreSQL instance and a real browser. See
+`app/README.md` for exactly what this implementation does and does not
+cover — in particular, it has no AI/LLM integration, no ERP integration, no
+supplier communication, and no deployment infrastructure (CI/CD, containers,
+hosting) yet.
 
 ## How decisions are classified
 
@@ -51,3 +57,5 @@ information is genuinely missing, documents say `OPEN — NOT SPECIFIED` or
 5. `docs/analysis/D-5-cancellation/README.md` — the cancellation-lifecycle
    analysis archive (D-5 through D-5.6), the most actively contested open
    decision area at the time of this bootstrap.
+6. `app/README.md` — the implementation reference: what is actually built
+   in `app/`/`web/`, and exactly what is not.

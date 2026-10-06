@@ -48,25 +48,35 @@ scoping are implemented as described below.
 ```
 app/
   prisma/schema.prisma        — data model (see "Domain model" below)
-  prisma/migrations/          — one migration: 20261002133918_init
-  src/db/client.ts            — shared Prisma client
+  prisma/migrations/          — two migrations: 20261002133918_init,
+                                 20261005133036_add_authn_persistence
+  src/db/client.ts            — shared Prisma client + the SEC-012/R15 runtime tenant guard
   src/domain/errors.ts        — domain error types, named after the rule each enforces
   src/domain/authorization.ts — minimum server-side authorization check (see "Authorization")
   src/services/               — one file per workflow stage (see "Domain rule enforcement")
-  src/api/server.ts           — thin Express API exposing each service as an HTTP endpoint
+  src/api/server.ts           — Express API exposing each service as an HTTP endpoint
+  src/api/                    — also contains the authentication layer (session.ts,
+                                 sessionAuthenticator.ts, oidc.ts, authRoutes.ts,
+                                 externalIdentity.ts, tenantBinding.ts, principal.ts)
+  src/scripts/provisionExternalIdentity.ts — one-time pilot operator identity mapping (AUTHN-12)
   src/seed/seed.ts            — development fixture data (explicitly marked as such)
-  test/workflow.e2e.test.ts   — the 9 required tests, run against real Postgres
+  test/                       — Vitest suite (12 files, 233 tests as of this writing), run against real Postgres
+  test-e2e/                   — Playwright suite (4 tests as of this writing), run against a real browser and the real dev servers
 ```
 
 ## Domain model (Prisma)
 
 `Tenant`, `User`, `Product`, `Supplier`, `ProcurementRequest`,
 `RequestLine`, `SourcingEvent`, `SupplierQuote`, `QuoteVersion`,
-`RecommendationRecord`, `DecisionPackage`, `Approval`, `PurchaseOrder`.
-No other entity was created. In particular: **there is no
-`ApprovedQuantity` entity or field anywhere** — `QS-C2` is implemented by
-simply never creating one; Approval references a `DecisionPackage` and
-that is the only quantity fact involved.
+`RecommendationRecord`, `DecisionPackage`, `Approval`, `PurchaseOrder`
+make up the procurement vertical slice itself; no other procurement
+entity was created. `ExternalIdentity` and `Session` were added
+separately for human authentication (`AUTHN-1`–`AUTHN-12`) — they are
+identity/session persistence models, not part of the procurement domain.
+In particular: **there is no `ApprovedQuantity` entity or field
+anywhere** — `QS-C2` is implemented by simply never creating one;
+Approval references a `DecisionPackage` and that is the only quantity
+fact involved.
 
 ## Domain rule enforcement
 
@@ -111,15 +121,34 @@ Every authoritative table carries a `tenantId` column, and every service
 function requires a `tenantId` and does all lookups via
 `findFirst({ where: { id, tenantId } })` rather than `findUnique({ id })`
 — so supplying another tenant's record id, without also knowing that
-tenant's own id, cannot retrieve or mutate it (Test 9). **This is
-query-level tenant scoping, not a database-enforced runtime guard**
-(e.g., no Postgres Row-Level Security policy is configured). A future
-bug that forgot to pass `tenantId` into a new query would not be caught
-by the database itself. This matches the security matrix's own existing
-classification: `SEC-012` ("runtime tenant guard") is listed as **OPEN /
-DESIGN GAP** in `../docs/security/enforcement-matrix.md`, and this V1
-slice does not close that gap — it only avoids the simplest version of
-the mistake (trusting a bare id) at the service layer.
+tenant's own id, cannot retrieve or mutate it (Test 9). This service-layer
+scoping remains the **primary** tenant isolation mechanism (`R10`).
+
+In addition, `SEC-012` ("runtime tenant guard") is now implemented as a
+defense-in-depth backstop (`R15`, `../docs/decisions/ratified.md`): a
+Prisma Client Extension (`tenantScoped()`, `src/db/client.ts`) validates
+every tenant-scoped Prisma operation — including the authorization
+hot-path (`domain/authorization.ts`) — against an authoritative tenant
+context, independently of each service's own query construction. See
+`test/tenantGuard.test.ts` for its dedicated coverage (implementation
+commits `5126a11`, `efacff0`). This is **not** PostgreSQL Row-Level
+Security — no RLS policy is configured, and whether RLS is adopted
+remains a separate, still-OPEN decision (`../docs/decisions/open.md`).
+
+## Authentication
+
+Human-facing authentication is implemented per `AUTHN-1`–`AUTHN-12`
+(`../docs/decisions/ratified.md`): OpenID Connect with Authorization Code
++ PKCE, server-side sessions persisted in PostgreSQL, and routes
+`/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/me`. Every route
+other than `/auth/*` requires a valid session cookie; the authenticated
+identity is the existing `Principal { userId, tenantId }` (`AUTHN-6`,
+unchanged), and a request's claimed `tenantId` is verified against that
+Principal (`assertTenantMatches`) rather than trusted from the request
+body. The pilot has completed a real browser login using Google as the
+OIDC provider — this is a pilot provider choice (`AUTHN-1`), not a
+ratified architectural commitment to Google specifically; the
+implementation is generic at the OIDC protocol/claims boundary.
 
 ## Authorization — what is and is not implemented
 
@@ -139,9 +168,11 @@ explicit limitation, not an oversight.
 `purchaseOrderService.createPurchaseOrderFromApproval` runs its entire
 check-then-create sequence (Approval lookup, DecisionPackage frozen
 check, existing-PO check, PO creation) inside one
-`prisma.$transaction(...)` — there is no window where a PO could be
-created without having just verified a valid Approval in the same
-transaction.
+`tenantScoped(validTenantId).$transaction(...)` — there is no window
+where a PO could be created without having just verified a valid
+Approval in the same transaction, and every operation inside that
+transaction is itself validated by the SEC-012/R15 runtime guard (see
+"Tenant isolation" above).
 
 ## Known limitations (explicit)
 
@@ -154,10 +185,13 @@ transaction.
 - No packaging/UOM conversion engine (`Q3`'s BOX->EA case) and no R11
   evidence pipeline (`Q3-CV`) — neither is exercised by the EA->EA
   scenario this slice targets.
-- Runtime tenant guard (`SEC-012`) and full RBAC are not implemented —
-  see "Tenant isolation" / "Authorization" above.
-- No UI. A thin HTTP API (`src/api/server.ts`) and the automated test
-  suite are the only ways to exercise the workflow today.
+- Full RBAC (a generic authorization/policy system) is not implemented —
+  see "Authorization" above. (`SEC-012`'s runtime tenant guard backstop
+  is implemented — see "Tenant isolation" above.)
+- A React frontend (`../web/`) provides an authenticated, single-screen
+  workflow UI for this same scenario, covered by Playwright end-to-end
+  tests (`test-e2e/workflow.spec.ts`). It is a thin client over the API
+  below — no business rule lives in the frontend.
 - `.env` / `.env.test` (not committed) point at a locally-running
   PostgreSQL 16 instance rather than a Dockerized one, since no Docker
   daemon was available in this environment — see "Stack" above.
@@ -184,7 +218,10 @@ npm run dev:api        # starts the API on :3000
 ```
 
 Manual walkthrough once the API is running (replace ids with the ones
-`npm run db:seed` prints):
+`npm run db:seed` prints). These examples predate authentication and
+assume a trusted caller; every route below now requires a valid session
+cookie, and an unauthenticated request receives `401` — see
+"Authentication" above for how a session is established:
 
 ```bash
 curl -X POST localhost:3000/sourcing-events -H 'content-type: application/json' \

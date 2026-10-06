@@ -74,7 +74,7 @@ authoritative for another's domain:
 | Document | Covers | Status of content |
 |---|---|---|
 | `01-system-principles.md` | Constitutional principles | RATIFIED |
-| `02-domain-model.md` | Domain entities | NOT YET RECORDED — see note below |
+| `02-domain-model.md` | Domain entities | Recorded — mixed, per-section status; see the document itself (§22 for the status-label legend) |
 | `03-data-model.md` | Data model / schema baseline | RATIFIED architecture baseline (not implementation schema) |
 | `04-security-model.md` | Security principles | RATIFIED baseline, several enforcement points OPEN |
 | `05-lifecycle-and-state-machines.md` | Canonical state machines | NOT YET RECORDED |
@@ -88,13 +88,15 @@ authoritative for another's domain:
 | `docs/security/enforcement-matrix.md` | Security control matrix | Mixed — see matrix itself |
 | `docs/analysis/D-5-cancellation/` | Cancellation-lifecycle analysis archive | Analytical record, D-5 itself remains OPEN |
 
-**Note on `02-domain-model.md`, `05-lifecycle-and-state-machines.md`,
+**Note on `05-lifecycle-and-state-machines.md`,
 `06-integration-model.md`, `07-ai-and-agent-model.md`,
 `09-operations-and-idempotency.md`:** this bootstrap pass recorded the
 documents explicitly requested by the D-5.7 task (00, 01, 03, 04, plus the
-decision registers, security matrix, and D-5 archive). The remaining
-documents in the originally-proposed structure were not populated in this
-pass — creating them with fabricated content would violate the "do not
-invent missing content" rule. They are left as **NOT YET RECORDED** rather
-than created empty or with placeholder content, so that their absence is
-visible rather than disguised as a thin stub.
+decision registers, security matrix, and D-5 archive). These four
+documents were not populated in that pass — creating them with
+fabricated content would violate the "do not invent missing content"
+rule — and remain **NOT YET RECORDED** rather than created empty or with
+placeholder content, so that their absence is visible rather than
+disguised as a thin stub. (`02-domain-model.md` was likewise unpopulated
+at that time, but has since been recorded in a later pass — see the
+document map above.)

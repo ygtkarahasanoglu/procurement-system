@@ -92,8 +92,11 @@ matrix.
 ## Explicit non-claims
 
 This document does **not** claim any of the above principles are fully
-enforced in code — this repository currently contains no implementation.
-Enforcement status per control is tracked separately in
-`docs/security/enforcement-matrix.md`, and several controls are explicitly
-`OPEN` or `DESIGN GAP` there. This document also does not select or ratify
-any cancellation/reversal mechanism (see `docs/analysis/D-5-cancellation/`).
+enforced in code — it records baseline security principles, not
+implementation or enforcement status. Enforcement status per control is
+tracked separately, and exclusively, in
+`docs/security/enforcement-matrix.md`; several controls are explicitly
+`OPEN` or `DESIGN GAP` there, and others are implemented — that matrix,
+not this document, is authoritative on which. This document also does not
+select or ratify any cancellation/reversal mechanism (see
+`docs/analysis/D-5-cancellation/`).
