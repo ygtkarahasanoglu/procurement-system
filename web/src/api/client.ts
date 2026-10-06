@@ -2,6 +2,7 @@ import type {
   ApiErrorBody,
   Approval,
   DecisionPackage,
+  Principal,
   ProcurementRequest,
   PurchaseOrder,
   QuoteVersion,
@@ -18,7 +19,12 @@ import type {
 // endpoints added in src/services/queryService.ts). No business rule is
 // implemented here; this file only shapes requests/responses.
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+
+/** Where the browser is sent to obtain a session — the backend's own
+ * /auth/login (never a frontend-relative path: the API is a different
+ * origin in local dev, :3000 vs the web dev server's :5173). */
+export const LOGIN_URL = `${API_BASE_URL}/auth/login`;
 
 export class ApiError extends Error {
   readonly kind: string;
@@ -35,6 +41,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
+      credentials: "include", // send/receive the server-side session cookie (AUTHN-4/11)
       headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
     });
   } catch {
@@ -66,6 +73,16 @@ function get<T>(path: string) {
 }
 
 export const api = {
+  /** Who the current session cookie authenticates as — null if there is
+   * none/it's invalid (the backend's 401), never thrown for that case. */
+  getMe: async (): Promise<Principal | null> => {
+    try {
+      return await get<Principal>("/auth/me");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return null;
+      throw err;
+    }
+  },
   listTenants: () => get<Tenant[]>("/tenants"),
   getTenantContext: (tenantId: string) => get<TenantContext>(`/tenants/${tenantId}/context`),
   listRequests: (tenantId: string) => get<ProcurementRequest[]>(`/requests?tenantId=${tenantId}`),

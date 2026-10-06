@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "./api/client";
-import type { ProcurementRequest, Product, Supplier } from "./api/types";
+import { api, LOGIN_URL } from "./api/client";
+import type { Principal, ProcurementRequest, Product, Supplier } from "./api/types";
 import { TenantActorBar, type ActorSelection } from "./components/TenantActorBar";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { NewRequestForm } from "./components/NewRequestForm";
@@ -10,7 +10,52 @@ import "./app.css";
 
 const STORAGE_KEY = "procurement-ui.actor-selection";
 
+// Minimal auth bootstrap (AUTHN, post Step-11): the backend now requires a
+// session cookie for every route except /auth/*, so the app must know
+// whether one exists before rendering anything that calls the API. This is
+// deliberately additive only — it does not touch, replace, or remove the
+// existing manual tenant/actor selection below; it only decides whether
+// that existing UI (or a minimal sign-in prompt) is shown. `principal` is
+// read once on mount and is not yet wired into the manual selection at
+// all — that remains a separate, later step.
+function useSessionBootstrap() {
+  const [principal, setPrincipal] = useState<Principal | null>(null);
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    api
+      .getMe()
+      .then(setPrincipal)
+      .finally(() => setChecked(true));
+  }, []);
+
+  return { principal, checked };
+}
+
 export default function App() {
+  const { principal, checked } = useSessionBootstrap();
+
+  if (!checked) {
+    return null;
+  }
+
+  if (!principal) {
+    return (
+      <div className="app">
+        <main className="app-main">
+          <p className="empty-state">
+            Sign in to use the procurement workspace.{" "}
+            <a href={LOGIN_URL}>Sign in</a>
+          </p>
+        </main>
+      </div>
+    );
+  }
+
+  return <AuthenticatedApp />;
+}
+
+function AuthenticatedApp() {
   const [selection, setSelection] = useState<ActorSelection | null>(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);

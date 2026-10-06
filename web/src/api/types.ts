@@ -8,6 +8,14 @@ export interface Tenant {
   name: string;
 }
 
+/** Mirrors the backend's Principal exactly (app/src/api/principal.ts) —
+ * returned by GET /auth/me. Never extend this beyond {userId, tenantId}
+ * without a corresponding ratified backend change (AUTHN-6). */
+export interface Principal {
+  userId: string;
+  tenantId: string;
+}
+
 export interface User {
   id: string;
   tenantId: string;

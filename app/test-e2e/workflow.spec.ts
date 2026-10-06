@@ -1,5 +1,6 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type BrowserContext } from "@playwright/test";
 import { PrismaClient } from "@prisma/client";
+import { createSession } from "../src/api/session";
 
 // Real-browser E2E test of the UI vertical slice, against the real
 // backend API and a real PostgreSQL database (the dev database the API
@@ -17,8 +18,40 @@ const prisma = new PrismaClient();
 // `npm run db:seed`'s own demo tenant) are still present in the database.
 const TENANT_NAME = `Playwright E2E Tenant ${Date.now()}`;
 
+// AUTHN (post Step-11): the backend's authentication middleware now
+// requires a valid session cookie for every route except /auth/*
+// (server.ts) — this suite must establish one before each test's
+// page.goto("/"). This uses the EXISTING production session primitive
+// (createSession, src/api/session.ts) directly to mint a real session row
+// and injects the resulting raw token as the real "session" cookie via
+// context.addCookies — exercising the real browser cookie ->
+// sessionAuthenticator -> Principal -> tenant binding -> protected route
+// chain exactly as production does. No mock authenticator, no test-only
+// route, no change to sessionAuthenticator.ts: only the interactive OIDC
+// redirect/provider round trip is skipped. "localhost" (no port) as the
+// cookie domain is deliberate — cookies are not port-scoped, so this one
+// cookie is sent to both the web origin (:5173) and the API origin
+// (:3000), matching this repo's local dev topology.
+async function authenticateAs(context: BrowserContext, userId: string): Promise<void> {
+  const session = await createSession(userId);
+  await context.addCookies([
+    {
+      name: "session",
+      value: session.rawToken,
+      domain: "localhost",
+      path: "/",
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+      expires: Math.floor(session.expiresAt.getTime() / 1000),
+    },
+  ]);
+}
+
 test.describe("Full procurement workflow via the browser", () => {
   let tenantId: string;
+  let procurementUserId: string;
+  let approverUserId: string;
   let productAId: string;
   let supplierAId: string;
   let supplierBId: string;
@@ -26,8 +59,12 @@ test.describe("Full procurement workflow via the browser", () => {
   test.beforeAll(async () => {
     const tenant = await prisma.tenant.create({ data: { name: TENANT_NAME } });
     tenantId = tenant.id;
-    await prisma.user.create({ data: { tenantId, name: "E2E Procurement User", role: "procurement_user" } });
-    await prisma.user.create({ data: { tenantId, name: "E2E Approver", role: "approver" } });
+    const procurementUser = await prisma.user.create({
+      data: { tenantId, name: "E2E Procurement User", role: "procurement_user" },
+    });
+    procurementUserId = procurementUser.id;
+    const approverUser = await prisma.user.create({ data: { tenantId, name: "E2E Approver", role: "approver" } });
+    approverUserId = approverUser.id;
     const product = await prisma.product.create({ data: { tenantId, name: "Product A", sku: "E2E-PRODUCT-A" } });
     productAId = product.id;
     const supplierA = await prisma.supplier.create({ data: { tenantId, name: "Supplier A" } });
@@ -40,7 +77,16 @@ test.describe("Full procurement workflow via the browser", () => {
     await prisma.$disconnect();
   });
 
-  test("Request 100 EA -> quotes -> recommendation 100 -> human decision 90 -> freeze -> approve -> PO 90", async ({ page }) => {
+  // Every test below starts authenticated as the procurement user by
+  // default — matching what each test's first UI action already assumed.
+  test.beforeEach(async ({ context }) => {
+    await authenticateAs(context, procurementUserId);
+  });
+
+  test("Request 100 EA -> quotes -> recommendation 100 -> human decision 90 -> freeze -> approve -> PO 90", async ({
+    page,
+    context,
+  }) => {
     await page.goto("/");
 
     // --- Tenant / actor selection ---
@@ -98,6 +144,11 @@ test.describe("Full procurement workflow via the browser", () => {
 
     // --- 8. Approval requires an approver actor; switch actor ---
     await page.getByLabel("Acting as").selectOption({ label: "E2E Approver (approver)" });
+    // The manual "Acting as" selector only changes what the UI displays —
+    // every mutating route now derives the acting identity exclusively
+    // from req.principal (AUTH-5), so acting as the approver for real
+    // requires re-authenticating this browser session as that user too.
+    await authenticateAs(context, approverUserId);
     const approvalSection = page.locator("section.panel").filter({ hasText: "Approval" });
     await expect(approvalSection.locator(".value-card")).toContainText("90 EA"); // frozen decision shown before approving
     await approvalSection.getByRole("button", { name: "Approve" }).click();
