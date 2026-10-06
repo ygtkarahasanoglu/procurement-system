@@ -32,3 +32,41 @@ export async function assertActorAuthorized(tenantId: string, userId: string, al
   }
   return user;
 }
+
+// AUTHN-5 (docs/decisions/ratified.md): application-level external-
+// identity provisioning authorization. Deliberately separate from
+// assertActorAuthorized above — provisioning capability
+// (User.canProvisionExternalIdentities) is never checked by, and never
+// implied by, a procurement-domain role, and this function never
+// accepts or consults `role`/`allowedRoles` in any way. Both the acting
+// User and the target User are resolved fresh, through the same
+// tenant-scoped access path as every other check in this codebase —
+// never from a Principal or any other value carried over from an
+// earlier request. A cross-tenant target is looked up within the
+// actor's own tenant scope and is therefore indistinguishable from a
+// nonexistent one, matching this codebase's existing not-found
+// discipline (assertActorAuthorized above; TenantMismatchError in
+// domain/errors.ts). This function does not itself perform, or call,
+// any provisioning write — it only authorizes the attempt; the
+// existing provisionExternalIdentity script/logic remains the sole
+// domain operation that creates an ExternalIdentity row, unchanged.
+export async function assertProvisioningAuthorized(actorTenantId: string, actorUserId: string, targetUserId: string) {
+  const db = tenantScoped(actorTenantId);
+
+  const actor = await db.user.findFirst({ where: { id: actorUserId, tenantId: actorTenantId } });
+  if (!actor) {
+    // Cross-tenant / nonexistent actor — do not distinguish the two.
+    throw new NotFoundError("User", actorUserId);
+  }
+  if (!actor.canProvisionExternalIdentities) {
+    throw new AuthorizationError(`User ${actorUserId} does not have external-identity provisioning authority.`);
+  }
+
+  const target = await db.user.findFirst({ where: { id: targetUserId, tenantId: actorTenantId } });
+  if (!target) {
+    // Cross-tenant / nonexistent target — do not distinguish the two.
+    throw new NotFoundError("User", targetUserId);
+  }
+
+  return { actor, target };
+}

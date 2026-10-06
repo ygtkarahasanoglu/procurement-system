@@ -1634,21 +1634,69 @@ ordinary procurement-domain authorization:
    `Principal`, and does not create a new formal platform-operator
    authorization model. `AUTHN-12` remains unchanged.
 
+**Capability representation — ratified 2026-10-06:** The application-
+level provisioning capability's minimal representation is ratified:
+
+1. Provisioning capability MUST NOT be represented as another value of
+   the existing `User.role` field. `User.role` remains the
+   representation of the procurement-domain role model only.
+   Provisioning capability is additive and independent of it: a `User`
+   may hold a procurement role and provisioning capability at the same
+   time. The capability MUST NOT require mutually-exclusive combined
+   role values.
+2. The application-level provisioning capability SHALL be represented
+   by an additive Boolean capability on the existing `User` record.
+   The Boolean SHALL default to `false` for existing and newly-created
+   `User`s, unless a future ratified decision explicitly establishes
+   another provisioning bootstrap rule. The exact field name is
+   **not** ratified by this decision.
+3. Provisioning authorization SHALL use a dedicated, narrow
+   provisioning-specific authorization check. It MUST NOT reuse
+   `assertActorAuthorized(...allowedRoles)` for provisioning
+   decisions, and MUST NOT introduce a generic system-wide
+   `authorize()` abstraction merely for this capability. The
+   provisioning-specific check SHALL: resolve the acting `User` from
+   the authenticated `Principal`; verify the provisioning capability;
+   enforce the already-ratified tenant boundary; and ensure the
+   target `User` belongs to the actor's tenant.
+4. Existing procurement-domain role authorization is unchanged: the
+   existing `procurement_user`/`approver` role checks continue to use
+   `assertActorAuthorized`, exactly as before this decision.
+5. `ExternalIdentity`'s data model does not change as a consequence of
+   this decision. Its existing `(issuer, subject)` uniqueness and
+   fail-closed provisioning semantics remain exactly as already
+   ratified. This decision determines only how application-level
+   authority to invoke provisioning is represented and checked.
+6. The capability is inherently tenant-scoped through the existing
+   `User` → `tenantId` relationship and the authenticated `Principal`.
+   Application-level provisioning MUST NOT cross tenant boundaries. No
+   new universal/global capability model is introduced.
+
+**Important bootstrap constraint:** Adding this Boolean does not, by
+itself, solve the first-user provisioning problem. The repository
+currently has no application-level mechanism for granting the first
+provisioning capability for a tenant. The existing `AUTHN-12`
+out-of-band operator/database path remains exactly as previously
+ratified and unchanged. **The bootstrap/grant mechanism for the first
+provisioning-capable `User` per tenant remains OPEN.**
+
 **Scope of this ratification:** This ratifies the provisioning
-mechanism's *semantic shape* and the provisioning-authority boundary
-above — not the complete user-management architecture, and not any
-specific implementation. It does **not** determine: the exact
-capability representation (a role, a separate capability/column/table,
-or another mechanism); the exact role/permission/capability name;
-whether a tenant receives a provisioning actor automatically or must
-request one; whether a tenant administrator specifically is required;
-whether multiple provisioning actors are supported per tenant; the
-exact HTTP route; the exact UI; invitation/email infrastructure; bulk
+mechanism's *semantic shape*, the provisioning-authority boundary, and
+the capability's minimal representation shape above — not the
+complete user-management architecture, and not any specific code,
+schema, or route. It does **not** determine: the exact Boolean field
+name; the exact authorization function name; the exact HTTP route; the
+exact UI; the exact migration name; whether one or multiple
+provisioning-capable `User`s are permitted per tenant; whether every
+tenant automatically receives a provisioning-capable `User`; how the
+first provisioning-capable `User` is bootstrapped; whether a tenant
+administrator concept is introduced; who is permitted to grant/revoke
+the Boolean capability; invitation/email infrastructure; bulk
 provisioning; SCIM/directory integration; user disable/re-enable
 semantics; session revocation semantics; identity re-linking
 semantics; multi-tenant membership (`R5`); or audit-log implementation.
-**The exact capability representation and actor/role naming are
-tracked separately as OPEN** (see `docs/decisions/open.md`).
+**All of the above remain tracked separately as OPEN** (see
+`docs/decisions/open.md`).
 
 **Relationship to AUTHN-12:** `AUTHN-12` remains exactly as previously
 ratified — limited to the specific one-user pilot bootstrap — and does
@@ -1665,14 +1713,18 @@ otherwise) remains an implementation choice within the semantic rule now
 ratified — not itself decided here.
 
 **Evidence:** Explicit human ratification via conversation, following
-two independent read-only assessments of AUTHN-5 production user
+three independent read-only assessments of AUTHN-5 production user
 provisioning: (1) provisioning-mechanism options (identity lifecycle,
 security risk comparison of candidate mechanisms, current-code fit,
 enterprise SaaS onboarding reality, and a neutral mechanism comparison);
-and (2) the administrative actor/role question (the security boundary
-of provisioning, tenant-isolation scoping alternatives, a role-vs-
+(2) the administrative actor/role question (the security boundary of
+provisioning, tenant-isolation scoping alternatives, a role-vs-
 capability-vs-separate-authority analysis, and an enterprise
-operating-model analysis), 2026-10-06.
+operating-model analysis); and (3) the capability-representation
+implementation assessment (tracing `assertActorAuthorized`'s actual
+mechanism and call sites, comparing representation alternatives against
+migration/runtime/coupling criteria, and security-failure-mode
+analysis), 2026-10-06.
 
 ### AUTHN-6 — Principal Contract Remains Unextended
 

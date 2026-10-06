@@ -48,6 +48,16 @@ model User {
   role      String // e.g. "procurement_user" | "approver" — see README
   createdAt DateTime @default(now())
 
+  // AUTHN-5 (docs/decisions/ratified.md): application-level authority to
+  // perform external-identity provisioning. Deliberately separate from
+  // `role` above — additive, never implied by any procurement-domain
+  // role, and never checked by assertActorAuthorized. Defaults to false
+  // for every existing and newly-created User; nothing in this schema
+  // change grants it to anyone. How the first such User per tenant is
+  // granted this remains OPEN (docs/decisions/open.md) — this column
+  // only makes the capability representable, it does not bootstrap it.
+  canProvisionExternalIdentities Boolean @default(false)
+
   requestsCreated  ProcurementRequest[] @relation("RequestCreatedBy")
   decisionsFormed  DecisionPackage[]    @relation("DecisionCreatedBy")
   approvalsGranted Approval[]           @relation("ApprovalGrantedBy")

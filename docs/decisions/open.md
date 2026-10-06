@@ -29,17 +29,25 @@ event should be treated as an error and corrected, not built upon.
 - **R9 exact mechanism** — the requirement that control-weakening actions be
   authorized/auditable/distinguishable is RATIFIED (see `ratified.md`); the
   exact mechanism (e.g., dual control, specific approval workflow) is OPEN.
-- **AUTHN-5 provisioning-authority representation** — the production
-  user-provisioning mechanism's semantic shape, and the provisioning-
-  authority boundary (separate from procurement-domain roles,
-  tenant-scoped when exercised through the application, a domain-
-  specific capability rather than a universal Authority entity, and
-  distinct from the existing AUTHN-12 operator path) are RATIFIED (see
-  `ratified.md`, AUTHN-5); the exact capability representation (a role,
-  a separate capability/column/table, or another mechanism), its exact
-  name, whether a tenant administrator specifically is required,
-  whether multiple provisioning actors are supported per tenant, and
-  the corresponding route/UI implementation all remain OPEN.
+- **AUTHN-5 provisioning capability — bootstrap and exact naming** —
+  the production user-provisioning mechanism's semantic shape, the
+  provisioning-authority boundary (separate from procurement-domain
+  roles, tenant-scoped when exercised through the application, a
+  domain-specific capability rather than a universal Authority entity,
+  distinct from the existing AUTHN-12 operator path), and the
+  capability's minimal representation shape (an additive Boolean on
+  `User`, defaulting to `false`, checked by a dedicated provisioning-
+  specific authorization function rather than `assertActorAuthorized`
+  or a generic `authorize()`) are all RATIFIED (see `ratified.md`,
+  AUTHN-5). Still OPEN: the exact Boolean field name; the exact
+  authorization function name; the exact route/UI; whether one or
+  multiple provisioning-capable `User`s are permitted per tenant;
+  whether every tenant automatically receives one; **how the first
+  provisioning-capable `User` for a tenant is bootstrapped** (the
+  repository has no application-level mechanism for this today —
+  AUTHN-12's out-of-band operator/database path remains the only
+  existing mechanism, unchanged); whether a tenant-administrator
+  concept is introduced; and who may grant/revoke the capability.
 - **RLS** — whether Row-Level Security is adopted as a defense-in-depth
   layer alongside service-layer authorization (R10 in `ratified.md` settles
   only that service-layer authorization is primary).
