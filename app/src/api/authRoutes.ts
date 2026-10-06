@@ -35,8 +35,6 @@ const SESSION_COOKIE_NAME = "session";
 const TRANSACTION_LIFETIME_MS = 10 * 60 * 1000; // ~10 minutes
 const SESSION_COOKIE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60; // ~14 days, matching session.ts's own absolute expiry
 const OIDC_SCOPE = "openid email";
-/** Fixed post-login destination — no arbitrary returnTo/open-redirect support exists anywhere in this module. */
-const POST_LOGIN_REDIRECT_PATH = "/";
 
 const GENERIC_AUTH_FAILURE = { error: "AuthenticationFailed", message: "The login attempt could not be completed." };
 const GENERIC_CONFIG_FAILURE = { error: "ConfigurationError", message: "Authentication is not available." };
@@ -46,6 +44,46 @@ export class MissingOidcConfigurationError extends Error {
     super(message);
     this.name = "MissingOidcConfigurationError";
   }
+}
+
+/** Distinct from MissingOidcConfigurationError: this is not an OIDC
+ * protocol setting, it is the frontend's own location, but is handled by
+ * the exact same fail-closed/500 path at the call site. */
+export class MissingRedirectConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MissingRedirectConfigurationError";
+  }
+}
+
+/**
+ * Reads POST_LOGIN_REDIRECT_URL from the environment — the absolute
+ * frontend URL a browser is sent to after a successful login. This is the
+ * one and only source for this value: it is never derived from the
+ * incoming request (Host header, Origin header, or any query parameter),
+ * so no caller input can influence where a login redirects to, and no
+ * open redirect is possible. Fails closed (throws) if the variable is
+ * missing, is not a valid absolute URL, or is not http(s) — this never
+ * falls back to a relative path or a guessed/hardcoded domain.
+ */
+export function loadPostLoginRedirectUrl(): URL {
+  const raw = process.env.POST_LOGIN_REDIRECT_URL;
+  if (!raw) {
+    throw new MissingRedirectConfigurationError("POST_LOGIN_REDIRECT_URL must be set to an absolute frontend URL.");
+  }
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new MissingRedirectConfigurationError("POST_LOGIN_REDIRECT_URL is not a valid absolute URL.");
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new MissingRedirectConfigurationError("POST_LOGIN_REDIRECT_URL must be an http(s) URL.");
+  }
+
+  return url;
 }
 
 export interface OidcEnvConfig {
@@ -238,8 +276,14 @@ export function createAuthRouter(): Router {
     }
 
     let config: OidcEnvConfig;
+    let postLoginRedirectUrl: URL;
     try {
       config = loadOidcConfigFromEnv();
+      // Validated here, before any OIDC network call or session creation,
+      // so a misconfigured redirect target fails closed immediately rather
+      // than leaving a session created with nowhere safe to send the
+      // browser.
+      postLoginRedirectUrl = loadPostLoginRedirectUrl();
     } catch (err) {
       logServerSideFailure("configuration error on /auth/callback", err);
       res.setHeader("Set-Cookie", clearTxnCookie);
@@ -310,7 +354,7 @@ export function createAuthRouter(): Router {
     const session = await createSession(resolution.identity.userId);
 
     res.setHeader("Set-Cookie", [clearTxnCookie, serializeSessionCookie(session.rawToken, session.expiresAt)]);
-    res.redirect(302, POST_LOGIN_REDIRECT_PATH);
+    res.redirect(302, postLoginRedirectUrl.toString());
   });
 
   // AUTHN Step 7: completes the session lifecycle (create/validate already

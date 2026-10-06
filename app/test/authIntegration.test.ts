@@ -63,6 +63,7 @@ const VALID_ENV = {
   OIDC_CLIENT_ID: "test-client-id",
   OIDC_CLIENT_SECRET: "test-client-secret",
   OIDC_REDIRECT_URI: "https://app.example/auth/callback",
+  POST_LOGIN_REDIRECT_URL: "https://app.example/",
 };
 
 describe("AUTHN Step 6A — real createApp(sessionAuthenticator) integration", () => {
@@ -133,6 +134,9 @@ describe("AUTHN Step 6A — real createApp(sessionAuthenticator) integration", (
     mockExchangeAuthorizationCode.mockResolvedValueOnce({ issuer: ISSUER, subject: KNOWN_SUBJECT });
     const callbackRes = await httpGet("/auth/callback?code=mockcode&state=mockstate", { cookie: txnCookie });
     expect(callbackRes.status).toBe(302);
+    // The browser must land on the actual frontend origin, never a path
+    // relative to this API server itself.
+    expect(callbackRes.headers.get("location")).toBe(VALID_ENV.POST_LOGIN_REDIRECT_URL);
 
     const callbackCookies = parseSetCookieHeaders(callbackRes.headers);
     const sessionCookie = findCookie(callbackCookies, "session")!.split(";")[0];

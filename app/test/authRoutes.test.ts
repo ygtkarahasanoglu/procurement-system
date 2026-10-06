@@ -66,6 +66,7 @@ const VALID_ENV = {
   OIDC_CLIENT_ID: "test-client-id",
   OIDC_CLIENT_SECRET: "test-client-secret",
   OIDC_REDIRECT_URI: "https://app.example/auth/callback",
+  POST_LOGIN_REDIRECT_URL: "https://app.example/",
 };
 
 function setValidEnv() {
@@ -76,6 +77,7 @@ function clearEnv() {
   delete process.env.OIDC_CLIENT_ID;
   delete process.env.OIDC_CLIENT_SECRET;
   delete process.env.OIDC_REDIRECT_URI;
+  delete process.env.POST_LOGIN_REDIRECT_URL;
 }
 
 describe("AuthN Step 5 — /auth/login and /auth/callback", () => {
@@ -340,13 +342,51 @@ describe("AuthN Step 5 — /auth/login and /auth/callback", () => {
       expect(res.bodyText.toLowerCase()).not.toContain("id_token");
     });
 
-    it("25. no open redirect is possible — the post-login destination is always the fixed path regardless of extra query parameters", async () => {
+    it("25. no open redirect is possible — the post-login destination is always the configured absolute URL regardless of extra query parameters", async () => {
       const { cookieValue } = await performLogin();
       mockExchangeAuthorizationCode.mockResolvedValueOnce({ issuer: ISSUER, subject: KNOWN_SUBJECT });
       const res = await performCallbackWithTxnCookie(cookieValue, "code=x&state=y&returnTo=https://evil.example");
 
       expect(res.status).toBe(302);
-      expect(res.headers.get("location")).toBe("/");
+      expect(res.headers.get("location")).toBe(VALID_ENV.POST_LOGIN_REDIRECT_URL);
+    });
+
+    it("POST_LOGIN_REDIRECT_URL: missing configuration fails closed (500) before any session is created, without attempting the exchange", async () => {
+      const sessionCountBefore = await prisma.session.count({ where: { userId } });
+      const { cookieValue } = await performLogin();
+      delete process.env.POST_LOGIN_REDIRECT_URL;
+      mockExchangeAuthorizationCode.mockResolvedValueOnce({ issuer: ISSUER, subject: KNOWN_SUBJECT });
+
+      const res = await performCallbackWithTxnCookie(cookieValue);
+
+      expect(res.status).toBe(500);
+      expect(JSON.parse(res.bodyText)).toMatchObject({ error: "ConfigurationError" });
+      expect(mockExchangeAuthorizationCode).not.toHaveBeenCalled();
+      expect(await prisma.session.count({ where: { userId } })).toBe(sessionCountBefore);
+    });
+
+    it("POST_LOGIN_REDIRECT_URL: a non-absolute value fails closed (500) rather than falling back to a relative path", async () => {
+      const { cookieValue } = await performLogin();
+      process.env.POST_LOGIN_REDIRECT_URL = "/relative-path";
+      mockExchangeAuthorizationCode.mockResolvedValueOnce({ issuer: ISSUER, subject: KNOWN_SUBJECT });
+
+      const res = await performCallbackWithTxnCookie(cookieValue);
+
+      expect(res.status).toBe(500);
+      expect(JSON.parse(res.bodyText)).toMatchObject({ error: "ConfigurationError" });
+      expect(mockExchangeAuthorizationCode).not.toHaveBeenCalled();
+    });
+
+    it("POST_LOGIN_REDIRECT_URL: a non-http(s) value (e.g. javascript:) fails closed (500)", async () => {
+      const { cookieValue } = await performLogin();
+      process.env.POST_LOGIN_REDIRECT_URL = "javascript:alert(1)";
+      mockExchangeAuthorizationCode.mockResolvedValueOnce({ issuer: ISSUER, subject: KNOWN_SUBJECT });
+
+      const res = await performCallbackWithTxnCookie(cookieValue);
+
+      expect(res.status).toBe(500);
+      expect(JSON.parse(res.bodyText)).toMatchObject({ error: "ConfigurationError" });
+      expect(mockExchangeAuthorizationCode).not.toHaveBeenCalled();
     });
 
     describe("security", () => {
