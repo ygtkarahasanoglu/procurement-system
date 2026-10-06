@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { prisma, tenantScoped, TenantGuardRejection } from "../src/db/client";
 import * as rfqDispatchService from "../src/services/rfqDispatchService";
 import { NotFoundError } from "../src/domain/errors";
+import { hashToken, generateRawToken } from "../src/api/rfqResponseToken";
 
 // RFQ Batch 2 — the internal, tenant-scoped RFQDispatch domain service.
 // Prepare/create side only (SEC-014): no token generation, no email, no
@@ -175,5 +176,136 @@ describe("RFQDispatch domain service (Batch 2 — prepare/create only)", () => {
     const dispatch = await rfqDispatchService.createRFQDispatch(tenantAId, sourcingEventAId, supplierAId);
     const db = tenantScoped(tenantBId);
     await expect(db.rFQDispatch.findUnique({ where: { id: dispatch.id } })).resolves.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------
+// RFQ Batch 3 — issueResponseToken: generate + hash + persist only.
+// No HTTP route, no email, no consumption/verification exist yet — see
+// the Batch 3 assessment for why issuance is deliberately unwired from
+// both RFQDispatch creation and any future SEND step.
+// ---------------------------------------------------------------
+describe("RFQDispatch domain service — issueResponseToken (Batch 3 — issuance only)", () => {
+  let tenantAId: string;
+  let tenantBId: string;
+  let supplierAId: string;
+  let sourcingEventAId: string;
+  let dispatchAId: string;
+
+  beforeAll(async () => {
+    const tenantA = await prisma.tenant.create({ data: { name: "RFQToken Tenant A" } });
+    tenantAId = tenantA.id;
+    const tenantB = await prisma.tenant.create({ data: { name: "RFQToken Tenant B" } });
+    tenantBId = tenantB.id;
+
+    const userA = await prisma.user.create({
+      data: { tenantId: tenantAId, name: "RFQToken Test User A", role: "procurement_user" },
+    });
+    const productA = await prisma.product.create({
+      data: { tenantId: tenantAId, name: "RFQToken Product A", sku: "RFQT-PRODUCT-A" },
+    });
+    supplierAId = (await prisma.supplier.create({ data: { tenantId: tenantAId, name: "RFQToken Supplier A" } })).id;
+
+    const requestA = await prisma.procurementRequest.create({ data: { tenantId: tenantAId, createdById: userA.id } });
+    const lineA = await prisma.requestLine.create({
+      data: { tenantId: tenantAId, requestId: requestA.id, productId: productA.id, requestedQuantity: "10", unit: "EA" },
+    });
+    sourcingEventAId = (await prisma.sourcingEvent.create({ data: { tenantId: tenantAId, requestLineId: lineA.id } })).id;
+
+    dispatchAId = (await rfqDispatchService.createRFQDispatch(tenantAId, sourcingEventAId, supplierAId)).id;
+  });
+
+  it("issues a token for a valid tenant + PENDING RFQDispatch", async () => {
+    const { rawToken, tokenExpiresAt } = await rfqDispatchService.issueResponseToken(tenantAId, dispatchAId);
+
+    expect(rawToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(tokenExpiresAt.getTime()).toBeGreaterThan(Date.now());
+
+    const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatchAId } });
+    expect(row.responseTokenHash).not.toBeNull();
+    // The returned raw token must never equal the persisted hash...
+    expect(rawToken).not.toBe(row.responseTokenHash);
+    // ...but hashing it must match exactly what was persisted.
+    expect(hashToken(rawToken)).toBe(row.responseTokenHash);
+    expect(row.tokenExpiresAt?.getTime()).toBe(tokenExpiresAt.getTime());
+  });
+
+  it("does not disturb the RFQDispatch's other fields — status stays PENDING, respondedAt stays null", async () => {
+    await rfqDispatchService.issueResponseToken(tenantAId, dispatchAId);
+    const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatchAId } });
+
+    expect(row.status).toBe("PENDING");
+    expect(row.respondedAt).toBeNull();
+    expect(row.sourcingEventId).toBe(sourcingEventAId);
+    expect(row.supplierId).toBe(supplierAId);
+    expect(row.tenantId).toBe(tenantAId);
+  });
+
+  it("rejects a nonexistent RFQDispatch", async () => {
+    await expect(rfqDispatchService.issueResponseToken(tenantAId, randomUUID())).rejects.toThrow(NotFoundError);
+  });
+
+  it("rejects a cross-tenant RFQDispatch — identical to nonexistent, no cross-tenant info leaked", async () => {
+    let nonexistentError: unknown;
+    let crossTenantError: unknown;
+    try {
+      await rfqDispatchService.issueResponseToken(tenantAId, randomUUID());
+    } catch (err) {
+      nonexistentError = err;
+    }
+    try {
+      await rfqDispatchService.issueResponseToken(tenantBId, dispatchAId);
+    } catch (err) {
+      crossTenantError = err;
+    }
+
+    expect(nonexistentError).toBeInstanceOf(NotFoundError);
+    expect(crossTenantError).toBeInstanceOf(NotFoundError);
+    expect((crossTenantError as Error).message).not.toMatch(/tenant/i);
+  });
+
+  it("a cross-tenant issuance attempt does not modify the dispatch at all", async () => {
+    const before = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatchAId } });
+    await rfqDispatchService.issueResponseToken(tenantBId, dispatchAId).catch(() => undefined);
+    const after = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatchAId } });
+    expect(after.responseTokenHash).toBe(before.responseTokenHash);
+    expect(after.tokenExpiresAt?.getTime()).toBe(before.tokenExpiresAt?.getTime());
+  });
+
+  // ---------------------------------------------------------------
+  // Rotation: a second issuance replaces the first token. This is
+  // ONLY a rotation mechanic — it does not decide resend, single-use,
+  // or quote-revision policy (all remain OPEN).
+  // ---------------------------------------------------------------
+  it("rotation: a second issuance produces a different raw token and hash, invalidating the first", async () => {
+    const first = await rfqDispatchService.issueResponseToken(tenantAId, dispatchAId);
+    const second = await rfqDispatchService.issueResponseToken(tenantAId, dispatchAId);
+
+    expect(second.rawToken).not.toBe(first.rawToken);
+
+    const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatchAId } });
+    expect(row.responseTokenHash).toBe(hashToken(second.rawToken));
+    expect(row.responseTokenHash).not.toBe(hashToken(first.rawToken));
+  });
+
+  // ---------------------------------------------------------------
+  // Genuine tenant-guard exercise (not merely application-level
+  // preconditions) — directly mirrors the fix for Batch 2's own
+  // MEDIUM finding: a tenant-mismatched update must be rejected by
+  // tenantScoped() itself, independent of the service's own check.
+  // ---------------------------------------------------------------
+  it("tenantScoped() itself rejects a tenant-mismatched RFQDispatch update (the guard is real, not merely imported)", async () => {
+    const db = tenantScoped(tenantBId);
+    await expect(
+      db.rFQDispatch.updateMany({
+        where: { id: dispatchAId, tenantId: tenantAId },
+        data: { responseTokenHash: hashToken(generateRawToken()), tokenExpiresAt: new Date() },
+      })
+    ).rejects.toThrow(TenantGuardRejection);
+  });
+
+  it("routes through tenantScoped(), not the bare prisma client, for the update itself", async () => {
+    const source = await readFile(join(__dirname, "../src/services/rfqDispatchService.ts"), "utf-8");
+    expect(source).not.toMatch(/\bprisma\.rFQDispatch\.updateMany/);
   });
 });
