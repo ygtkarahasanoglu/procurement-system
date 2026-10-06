@@ -10,6 +10,8 @@ import * as purchaseOrderService from "../services/purchaseOrderService";
 import * as queryService from "../services/queryService";
 import * as productService from "../services/productService";
 import * as supplierService from "../services/supplierService";
+import * as rfqDispatchService from "../services/rfqDispatchService";
+import type { SendRFQDispatchDeps } from "../services/rfqDispatchService";
 import { Prisma } from "@prisma/client";
 import { AuthorizationError } from "../domain/authorization";
 import { NotFoundError, InvalidStateError, ApprovalRequiredError, CommercialDeviationError, ValidationError } from "../domain/errors";
@@ -17,6 +19,19 @@ import type { Authenticator, Principal } from "./principal";
 import { assertTenantMatches } from "./tenantBinding";
 import { createAuthRouter } from "./authRoutes";
 import { sessionAuthenticator } from "./sessionAuthenticator";
+import { unconfiguredEmailSender } from "./emailSender";
+
+// Default RFQ SEND dependencies for every existing/future createApp()
+// caller that does not explicitly inject its own (every existing test
+// file calls createApp(authenticator) with one argument — this default
+// keeps all of them compiling and behaving exactly as before). No real
+// email provider is selected here; this placeholder is never actually
+// reachable from a real transport (provider selection remains OPEN,
+// docs/decisions/open.md).
+const DEFAULT_SEND_DEPS: SendRFQDispatchDeps = {
+  emailSender: unconfiguredEmailSender,
+  responseBaseUrl: "http://localhost:3000",
+};
 
 // AUTHN-11 (CORS Restriction Requirement, docs/decisions/ratified.md):
 // reads a comma-separated allow-list of exact trusted browser origins from
@@ -51,7 +66,7 @@ function parseCorsTrustedOrigins(raw: string | undefined): string[] {
 // below supplies a temporary placeholder (never invoked, always resolves to
 // null) solely so this required parameter can be satisfied before a real
 // Authenticator is chosen in a later step — see the comment there.
-export function createApp(authenticator: Authenticator) {
+export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatchDeps = DEFAULT_SEND_DEPS) {
   const app = express();
   app.locals.authenticator = authenticator;
 
@@ -354,6 +369,19 @@ export function createApp(authenticator: Authenticator) {
         req.body.approvalId,
         req.principal!.userId
       )
+    )
+  );
+
+  // RFQ-S1/RFQ-S2 (docs/decisions/ratified.md). No client-supplied
+  // tenantId/actorUserId/role — both come exclusively from req.principal,
+  // exactly like /sourcing-events and /recommendations above. No
+  // assertTenantMatches call: this route takes no external tenant claim
+  // to validate at all (same reasoning as GET /tenants above) — the
+  // principal's own tenantId is simply the sole input.
+  app.post(
+    "/rfq-dispatches/:id/send",
+    wrap((req) =>
+      rfqDispatchService.sendRFQDispatch(req.principal!.tenantId, req.principal!.userId, req.params.id, sendDeps)
     )
   );
 

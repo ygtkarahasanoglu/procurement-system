@@ -1,7 +1,10 @@
 import { tenantScoped } from "../db/client";
-import { NotFoundError } from "../domain/errors";
+import { NotFoundError, InvalidStateError } from "../domain/errors";
+import { assertActorAuthorized } from "../domain/authorization";
 import { requireId } from "../domain/validation";
 import { generateRawToken, hashToken } from "../api/rfqResponseToken";
+import type { EmailSender } from "../api/emailSender";
+import { composeRfqEmail, buildResponseUrl } from "./rfqEmailComposer";
 
 // RFQ response lifetime — an IMPLEMENTATION-ONLY DEFAULT, not a ratified
 // business policy. Unlike session.ts's SESSION_LIFETIME_MS (traceable to
@@ -108,4 +111,152 @@ export async function issueResponseToken(tenantId: string, rfqDispatchId: string
   }
 
   return { rawToken, tokenExpiresAt };
+}
+
+// Injected dependency, mirroring createApp(authenticator)'s own existing
+// seam for an externally-selected implementation — sendRFQDispatch is the
+// first RFQ service function with a genuine external side effect, so it
+// is the first to need this. No real email provider is selected or
+// integrated by this function or by any default supplied for it
+// (provider selection remains OPEN, docs/decisions/open.md).
+export interface SendRFQDispatchDeps {
+  emailSender: EmailSender;
+  responseBaseUrl: string;
+}
+
+// RFQ-S1/RFQ-S2 (docs/decisions/ratified.md) — the SEND boundary. Exact
+// ordering, each step justified by the RFQ SEND implementation-design
+// assessment and its CAS/SENDING and authorization-role follow-ups:
+//
+//   1. authorize (assertActorAuthorized) — before any dispatch-specific
+//      lookup, so an unauthorized actor never learns anything about
+//      whether/where the target dispatch exists (mirrors
+//      approvalService.approve's own authorize-then-lookup order).
+//   2. tenant-scoped preflight lookup — resolves the whole composition
+//      graph (RFQDispatch -> Supplier, -> SourcingEvent -> RequestLine
+//      -> Product) in one read via Prisma relations; ordinary
+//      NotFoundError for missing/cross-tenant, indistinguishable as
+//      always.
+//   3. deterministic preflight validation — Supplier.email is the only
+//      nullable field anywhere in this composition graph; if null, the
+//      dispatch is left PENDING, untouched, and InvalidStateError is
+//      thrown. This is not an "unknown provider outcome" — it is a
+//      fully local, deterministic fact known before any external
+//      attempt, so it must never be allowed to enter SENDING at all.
+//   4. CAS claim (PENDING -> SENDING) — the sole authoritative exclusive
+//      claim; count === 0 is never distinguished by cause (race,
+//      already SENDING/SENT/SEND_FAILED) beyond a single InvalidStateError.
+//   5. token issuance — only after a successful claim. If this throws,
+//      the dispatch is deliberately left in SENDING: no SEND_FAILED is
+//      written for a token-issuance failure, and no email is attempted.
+//      This is intentional, not an omission — see the stuck-SENDING
+//      OPEN item in docs/decisions/open.md.
+//   6. compose — pure, no DB, no side effect (rfqEmailComposer.ts).
+//   7. EmailSender.send — the one true external side effect.
+//   8. final state — tenant-scoped, state-conditioned. "unknown" leaves
+//      SENDING untouched, per RFQ-S1; a final-write count === 0 is an
+//      internal inconsistency (this exact caller already held the
+//      exclusive SENDING claim), surfaced rather than silently ignored.
+export async function sendRFQDispatch(
+  tenantId: string,
+  actorUserId: string,
+  rfqDispatchId: string,
+  deps: SendRFQDispatchDeps
+) {
+  const validTenantId = requireId(tenantId, "tenantId");
+  const validActorUserId = requireId(actorUserId, "actorUserId");
+  const validRfqDispatchId = requireId(rfqDispatchId, "rfqDispatchId");
+
+  await assertActorAuthorized(validTenantId, validActorUserId, ["procurement_user", "approver"]);
+
+  const db = tenantScoped(validTenantId);
+
+  const dispatch = await db.rFQDispatch.findFirst({
+    where: { id: validRfqDispatchId, tenantId: validTenantId },
+    include: {
+      supplier: true,
+      sourcingEvent: { include: { requestLine: { include: { product: true } } } },
+    },
+  });
+  if (!dispatch) {
+    throw new NotFoundError("RFQDispatch", validRfqDispatchId);
+  }
+
+  // Defense-in-depth only (RFQ SEND adversarial review): the R15 guard
+  // validates the top-level RFQDispatch.findFirst's own where.tenantId,
+  // but relations fetched via `include` are resolved as SQL JOINs within
+  // that same query and are never independently re-checked by the guard.
+  // Today this is non-exploitable — createRFQDispatch already validates
+  // Supplier/SourcingEvent tenant membership before an RFQDispatch row
+  // can ever exist, and no update/delete path anywhere in this codebase
+  // can change a Supplier/SourcingEvent/RequestLine/Product's tenantId
+  // afterward — but SEND is the first action with a real external
+  // consequence, so this invariant is checked explicitly here rather
+  // than trusted silently. A violation indicates a bug elsewhere, not a
+  // normal cross-tenant resource lookup — it is therefore treated as an
+  // internal-consistency failure (a plain Error, mapped generically to
+  // a 500 response and never detailed to the calling route), not NotFoundError, and
+  // it is checked before any claim/token/email side effect.
+  if (
+    dispatch.tenantId !== validTenantId ||
+    dispatch.supplier.tenantId !== validTenantId ||
+    dispatch.sourcingEvent.tenantId !== validTenantId ||
+    dispatch.sourcingEvent.requestLine.tenantId !== validTenantId ||
+    dispatch.sourcingEvent.requestLine.product.tenantId !== validTenantId
+  ) {
+    throw new Error(
+      `Internal inconsistency: RFQDispatch ${validRfqDispatchId}'s related data does not all belong to tenant ${validTenantId}.`
+    );
+  }
+
+  if (!dispatch.supplier.email) {
+    throw new InvalidStateError(
+      `Supplier ${dispatch.supplierId} has no email address on file; RFQDispatch ${validRfqDispatchId} cannot be sent.`
+    );
+  }
+
+  const claim = await db.rFQDispatch.updateMany({
+    where: { id: validRfqDispatchId, tenantId: validTenantId, status: "PENDING" },
+    data: { status: "SENDING" },
+  });
+  if (claim.count === 0) {
+    throw new InvalidStateError(
+      `RFQDispatch ${validRfqDispatchId} is not available to claim for SEND (not PENDING, or claimed concurrently).`
+    );
+  }
+
+  const { rawToken } = await issueResponseToken(validTenantId, validRfqDispatchId);
+
+  const requestLine = dispatch.sourcingEvent.requestLine;
+  const composed = composeRfqEmail({
+    supplierEmail: dispatch.supplier.email,
+    supplierName: dispatch.supplier.name,
+    productName: requestLine.product.name,
+    requestedQuantity: requestLine.requestedQuantity.toString(),
+    unit: requestLine.unit,
+    responseUrl: buildResponseUrl(deps.responseBaseUrl, rawToken),
+  });
+
+  const outcome = await deps.emailSender.send({
+    to: composed.to,
+    subject: composed.subject,
+    body: composed.body,
+  });
+
+  if (outcome.kind === "unknown") {
+    return { status: "SENDING" as const };
+  }
+
+  const finalStatus = outcome.kind === "success" ? ("SENT" as const) : ("SEND_FAILED" as const);
+  const final = await db.rFQDispatch.updateMany({
+    where: { id: validRfqDispatchId, tenantId: validTenantId, status: "SENDING" },
+    data: { status: finalStatus },
+  });
+  if (final.count === 0) {
+    throw new Error(
+      `Internal inconsistency: RFQDispatch ${validRfqDispatchId} was not in SENDING when recording its final SEND outcome.`
+    );
+  }
+
+  return { status: finalStatus };
 }
