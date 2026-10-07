@@ -14,9 +14,13 @@ OpenID Connect (OIDC + PKCE) authentication and server-side sessions; `web/`
 is a React frontend wired to that authenticated backend. Automated tests
 exist and pass against a real PostgreSQL instance and a real browser. See
 `app/README.md` for exactly what this implementation does and does not
-cover — in particular, it has no AI/LLM integration, no ERP integration, no
-supplier communication, and no deployment infrastructure (CI/CD, containers,
-hosting) yet.
+cover — in particular, it has no AI/LLM integration, no ERP integration, and
+no deployment infrastructure (containers, hosting) yet. Supplier
+communication (RFQ send/response/event-history/provider-delivery) is
+implemented — see `app/README.md`. An automated test-verification gate
+(`.github/workflows/ci.yml`) now runs the backend test suite on every push
+and pull request; this is CI for verification only, not release/deployment
+automation.
 
 ## How decisions are classified
 

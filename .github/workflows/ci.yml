@@ -1,0 +1,87 @@
+name: CI
+
+# Automated Verification Gate (Operational/Infrastructure, implementation-only).
+# Runs the existing backend test suite (app/) against a disposable,
+# CI-only PostgreSQL service — no production credentials, no production
+# database, no customer data. See app/README.md "How to run locally" for
+# the exact same commands run here, reproducible on a developer machine.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-tests:
+    name: Backend tests (app/)
+    runs-on: ubuntu-latest
+
+    # Disposable, CI-only database. Credentials below are not secrets —
+    # they only ever address a throwaway container on this job's own
+    # localhost, created and destroyed within the run.
+    env:
+      DATABASE_URL: "postgresql://ci:ci_password_not_secret@localhost:5432/procurement_test?schema=public"
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci_password_not_secret
+          POSTGRES_DB: procurement_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Generate Prisma Client
+        working-directory: app
+        run: npm run db:generate
+
+      # Non-interactive migration application — the repository's own
+      # `db:migrate` script (`prisma migrate dev`) is the interactive,
+      # local-schema-iteration command and is not appropriate for CI;
+      # `migrate deploy` is the standard non-interactive counterpart of
+      # the same Prisma CLI already a devDependency here, applying
+      # exactly the migrations already committed under
+      # prisma/migrations/ — no schema or migration file is generated
+      # or altered by this step.
+      - name: Apply database migrations
+        working-directory: app
+        run: npx prisma migrate deploy
+
+      # Uses the existing canonical `build` script (tsc) as a cheap,
+      # deterministic typecheck gate — matching the manual `tsc --noEmit`
+      # check already performed before every change in this repository's
+      # own development practice. Not a new command invented for CI.
+      - name: Typecheck
+        working-directory: app
+        run: npm run build
+
+      # app/.env.test is gitignored (app/.gitignore) and never committed;
+      # `npm test` (dotenv -e .env.test -- vitest run) requires it to
+      # exist. This reconstructs it for this job only, from the same
+      # DATABASE_URL already defined above — never a real/shared secret.
+      - name: Create .env.test for this run
+        working-directory: app
+        run: echo "DATABASE_URL=\"$DATABASE_URL\"" > .env.test
+
+      # The repository's own canonical test command, unmodified.
+      - name: Run test suite
+        working-directory: app
+        run: npm test

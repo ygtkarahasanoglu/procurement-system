@@ -252,3 +252,36 @@ curl -X POST localhost:3000/purchase-orders -H 'content-type: application/json' 
 This exact sequence was run manually against a live server during
 implementation and produced:
 `{"supplierId":"<Supplier A>","productId":"<Product A>","quantity":"90","unit":"EA","unitPrice":"10","currency":"EUR"}`.
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` (repository root) runs the backend test
+suite above automatically on every push to `main` and every pull
+request, against a disposable PostgreSQL 16 service container — never
+a production database or credential. It reproduces exactly the local
+sequence above: `npm ci` → `npm run db:generate` → `npx prisma migrate
+deploy` (the non-interactive counterpart of `db:migrate`, used because
+CI must not prompt or generate new migrations) → `npm run build`
+(typecheck) → `npm test`. To reproduce the same test run locally,
+the commands above (`npm run db:migrate`, `npm test`) are sufficient —
+CI does not add any test behavior beyond what `npm test` already runs.
+
+**Known pre-existing failure, not introduced by CI:** `test/
+workflow.e2e.test.ts`'s own `resetDatabase()` deletes `SourcingEvent`
+rows before `RFQDispatch` rows that reference them, which fails with a
+foreign-key violation whenever an earlier test file in the same run has
+left an `RFQDispatch` behind (several RFQ test files create fixtures
+without their own teardown). This is a pre-existing gap in that one
+test file's own cleanup ordering, unrelated to CI — CI surfaces it
+rather than hiding it, and it is intentionally left unfixed here rather
+than silently patched to produce an artificially green run.
+
+**Not yet covered by CI:** the Playwright E2E suite (`test-e2e/`).
+Its own `playwright.config.ts` documents that it assumes the backend
+API (`:3000`) and frontend dev server (`:5173`) are already running as
+externally-managed, already-started processes against `procurement_dev`
+— it was never designed to self-start either server. Reliably
+orchestrating that startup/readiness sequence in an ephemeral CI
+runner would mean redesigning this suite's own execution model, which
+is out of scope for this verification-gate addition; the backend
+`vitest` suite above remains independently gated regardless.
