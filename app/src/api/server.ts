@@ -21,6 +21,14 @@ import { createAuthRouter } from "./authRoutes";
 import { sessionAuthenticator } from "./sessionAuthenticator";
 import { sendGridEmailSender } from "./sendgridEmailSender";
 import { createDevEmailSender } from "./devEmailSender";
+import {
+  SENDGRID_SIGNATURE_HEADER,
+  SENDGRID_TIMESTAMP_HEADER,
+  verifySendGridSignature,
+  isSignatureTimestampFresh,
+  loadWebhookVerificationKeyFromEnv,
+} from "./sendgridWebhookVerification";
+import { mapSendGridEvent, recordProviderDeliveryEvent } from "../services/providerDeliveryEventService";
 
 // Default RFQ SEND dependencies for every existing/future createApp()
 // caller that does not explicitly inject its own (every existing test
@@ -95,6 +103,100 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
       credentials: true,
     })
   );
+  // Provider Delivery & Outcome Confirmation Boundary — RFQ-PD1–RFQ-PD20
+  // (docs/decisions/ratified.md). Mounted here, BEFORE app.use(express.json())
+  // below and BEFORE the Principal authentication middleware further down:
+  // this is a server-to-server SendGrid webhook with no browser session and
+  // no Principal (the same unauthenticated-carve-out reasoning as /auth and
+  // /rfq-responses/:token elsewhere in this file), and RFQ-PD15 requires the
+  // exact RAW request body for signature verification — once express.json()
+  // parses a request, the original bytes are gone. A route-scoped
+  // express.raw() (never a global body-parser change, per the implementation
+  // brief's own instruction to prefer route-scoped handling) is how the raw
+  // body is obtained here without affecting any other endpoint. This handler
+  // always responds and never calls next(), so express.json() below never
+  // runs for this path.
+  app.post(
+    "/webhooks/sendgrid/events",
+    express.raw({ type: "application/json", limit: "2mb" }),
+    async (req: Request, res: Response) => {
+      if (!Buffer.isBuffer(req.body)) {
+        return res.status(400).json({ error: "ValidationError", message: "Request body must be application/json." });
+      }
+      const rawBody = req.body as Buffer;
+      const signature = req.header(SENDGRID_SIGNATURE_HEADER);
+      const timestamp = req.header(SENDGRID_TIMESTAMP_HEADER);
+      if (!signature || !timestamp) {
+        console.error("[sendgrid-webhook] rejected: missing signature/timestamp header.");
+        return res.status(403).json({ error: "Forbidden", message: "Webhook authentication failed." });
+      }
+
+      let verificationKey: string;
+      try {
+        verificationKey = loadWebhookVerificationKeyFromEnv();
+      } catch (err) {
+        console.error("[sendgrid-webhook] verification key not configured:", err instanceof Error ? err.message : String(err));
+        return res.status(500).json({ error: "InternalError", message: "Webhook is not configured." });
+      }
+
+      // RFQ-PD15: fail closed on EITHER an invalid signature OR a stale
+      // signing timestamp — strictly before any JSON parsing, tenant
+      // derivation, or domain processing. Never distinguishes which check
+      // failed in the response, mirroring this codebase's existing
+      // generic-rejection discipline (RFQ-R2/R3's indistinguishable
+      // invalid-token rejection). Never logs the signature, timestamp
+      // value, verification key, or raw payload content.
+      const signatureValid = verifySendGridSignature({
+        publicKeyBase64: verificationKey,
+        signatureBase64: signature,
+        timestamp,
+        rawBody,
+      });
+      const timestampFresh = isSignatureTimestampFresh(timestamp);
+      if (!signatureValid || !timestampFresh) {
+        console.error(
+          `[sendgrid-webhook] rejected: authentication failed (signatureValid=${signatureValid}, timestampFresh=${timestampFresh}).`
+        );
+        return res.status(403).json({ error: "Forbidden", message: "Webhook authentication failed." });
+      }
+
+      // Only reached after successful authentication (RFQ-PD15) — JSON
+      // parsing, correlation, and persistence all happen strictly after
+      // this point, never before it.
+      let events: unknown;
+      try {
+        events = JSON.parse(rawBody.toString("utf8"));
+      } catch {
+        return res.status(400).json({ error: "ValidationError", message: "Request body is not valid JSON." });
+      }
+      if (!Array.isArray(events)) {
+        return res.status(400).json({ error: "ValidationError", message: "Request body must be a JSON array." });
+      }
+
+      // Each event is recorded independently — one malformed/unmappable
+      // item (mapSendGridEvent returning null, RFQ-PD7) or one failed
+      // write never blocks the rest of the batch. recordProviderDeliveryEvent
+      // is itself idempotent under (provider, providerEventId) duplication
+      // (RFQ-PD6), so SendGrid's documented at-least-once redelivery is safe.
+      let recorded = 0;
+      for (const rawEvent of events) {
+        const mapped = mapSendGridEvent(rawEvent);
+        if (!mapped) continue;
+        try {
+          await recordProviderDeliveryEvent(mapped);
+          recorded++;
+        } catch (err) {
+          console.error(
+            "[sendgrid-webhook] failed to record one provider delivery event:",
+            err instanceof Error ? err.message : String(err)
+          );
+        }
+      }
+      console.log(`[sendgrid-webhook] authenticated batch of ${events.length} event(s), recorded ${recorded}.`);
+      return res.status(200).json({ received: true });
+    }
+  );
+
   app.use(express.json());
   // Malformed JSON ("entity.parse.failed" from body-parser) would
   // otherwise fall through to the generic 500 handler below; surface it

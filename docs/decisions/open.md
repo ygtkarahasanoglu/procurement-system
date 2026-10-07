@@ -163,20 +163,135 @@ event should be treated as an error and corrected, not built upon.
   environment configuration, or adapter implementation exists in this
   repository as a result of it.
 - **Provider idempotency key usage** — whether SendGrid offers a usable
-  idempotency mechanism, and whether/how one would ever be verified and
-  integrated, is explicitly NOT assumed or ratified (see `ratified.md`,
-  `RFQ-EP6`). Provider message ID (`RFQ-EP4`) is explicitly not
-  equivalent to an idempotency key.
-- **Webhook authenticity / inbound trust, and webhook data
-  residency/handling** — delivery webhook, bounce webhook, and
-  complaint-event ingestion; how an inbound webhook's authenticity would
-  be verified; and where/how webhook event data is processed and stored,
-  including the US-staging caveat recorded at `RFQ-EP3`. None of these
-  are resolved by `RFQ-EP1`–`RFQ-EP8` (see `ratified.md`, `RFQ-EP7`).
+  idempotency mechanism for *outbound send*, and whether/how one would
+  ever be verified and integrated, is explicitly NOT assumed or ratified
+  (see `ratified.md`, `RFQ-EP6`). Provider message ID (`RFQ-EP4`) is
+  explicitly not equivalent to an idempotency key. **Disambiguation:**
+  this is a distinct concern from inbound webhook event identity/dedup
+  (`(provider, providerEventId)`), which is now RATIFIED at `RFQ-PD6` —
+  the two sit on opposite sides of the send/delivery boundary and must
+  never be conflated (see `RFQ-PD6`'s own Canonical separation block).
+- **Webhook authenticity mechanism — RATIFIED AND IMPLEMENTED.** The
+  verification *mechanism* (ECDSA signature, raw-body + timestamp
+  signing, the two SendGrid headers, fail-closed policy on invalid
+  verification, single-key configuration/management, and a 300-second
+  replay-tolerance window as explicit application policy) was ratified
+  at `RFQ-PD15`/`RFQ-PD16` (`docs/decisions/ratified.md`) and has now
+  been implemented: `app/src/api/sendgridWebhookVerification.ts`
+  (ECDSA verification over `timestamp + rawBody`, timestamp-freshness
+  check, lazy verification-key loader) and the route-scoped raw-body
+  handling in `app/src/api/server.ts`'s `POST /webhooks/sendgrid/events`
+  (mounted before `express.json()` so the true raw bytes are preserved).
+  Covered by `app/test/sendgridWebhook.test.ts` (valid/invalid signature,
+  stale timestamp, tampered-body-with-valid-headers, missing headers).
+  Still fully OPEN: where/how webhook event data is processed and
+  stored BEYOND this verification+persistence step, including the
+  US-staging caveat recorded at `RFQ-EP3`; any further bounce/
+  complaint-event business handling beyond normalized persistence; and
+  key rotation semantics, which `RFQ-PD16` explicitly declines to define
+  beyond "no automated rotation, manual replacement only" (no rotation
+  mechanism is implemented, consistent with that decision). None of
+  `RFQ-EP1`–`RFQ-EP8` resolved any of this (see `ratified.md`,
+  `RFQ-EP7`).
+- **Provider Delivery & Outcome Confirmation Boundary —
+  persistence/implementation — RATIFIED AND IMPLEMENTED.** `RFQ-PD1`–
+  `RFQ-PD20` (`docs/decisions/ratified.md`) ratified the semantics in
+  advance of implementation (delivery vs. send lifecycle separation,
+  correlation contract via `custom_args.rfq_dispatch_id`,
+  `UNCORRELATED`-event handling, provider event identity/dedup,
+  delivery vocabulary and `BOUNCE`/`BLOCKED` subtyping, `UNKNOWN`/
+  `DEFERRED` semantics, non-recovery of `SENDING` as a deliberate
+  not-now position, no-automatic-retry, provider isolation, a dedicated
+  (non-`RFQCommunicationEvent`) delivery-event model, event ordering,
+  webhook authenticity mechanics, `custom_args` constraints and their
+  explicit lifecycle-verification gap, no queue/worker, and
+  delivery-is-not-receipt), following the same Fast Track pattern
+  already used for `RFQ-EH1`–`RFQ-EH10`. The first production-shaped
+  implementation slice now exists:
+  - **Webhook endpoint:** `POST /webhooks/sendgrid/events`
+    (`app/src/api/server.ts`), unauthenticated (no Principal/session —
+    server-to-server), mounted before `express.json()`.
+  - **Dedicated persistence model:** `RFQProviderDeliveryEvent`
+    (`app/prisma/schema.prisma`; migration
+    `20261007171921_add_rfq_provider_delivery_event`) — nullable
+    `tenantId`/`rfqDispatchId`, `@@unique([provider, providerEventId])`
+    (Postgres default NULLS DISTINCT, so a null `providerEventId` is
+    never falsely deduplicated), deliberately excluded from
+    `db/client.ts`'s `TENANT_SCOPED_MODELS` guard (a row may legitimately
+    carry no tenant at all; documented in the schema comment).
+  - **Mapping/correlation/persistence:**
+    `app/src/services/providerDeliveryEventService.ts` — maps SendGrid's
+    `event`/`type` onto the ratified closed vocabulary, extracts
+    `rfq_dispatch_id` (flattened top-level key, with a defensive nested
+    `custom_args.rfq_dispatch_id` fallback — see the unresolved shape
+    question below), resolves tenant strictly from the matched
+    `RFQDispatch` row (never from the payload), and persists idempotently
+    (a duplicate `(provider, providerEventId)` is caught and treated as
+    an already-recorded no-op).
+  - **Outbound `custom_args` threading:** `EmailSender.send`'s
+    `SendEmailInput` now carries an optional, provider-neutral
+    `correlationId` (`app/src/api/emailSender.ts`);
+    `rfqDispatchService.ts` passes the sending `RFQDispatch.id`;
+    `sendgridEmailSender.ts` maps it onto
+    `custom_args.rfq_dispatch_id` only when present.
+  - **Tests:** `app/test/sendgridWebhook.test.ts` (24 tests: signature
+    authenticity, correlation, dedup including a concurrent-race case,
+    event-type mapping including `BOUNCE`/`BLOCKED`, lifecycle safety
+    against `RFQDispatch`, cross-tenant isolation, `UNCORRELATED`
+    diagnostic-only `providerMessageId` handling) and 2 new tests in
+    `app/test/sendgridEmailSender.test.ts` for `custom_args` threading.
+
+  Still fully OPEN, NOT closed by this implementation: any route/UI for
+  surfacing provider delivery facts to a human (no read endpoint exists
+  — only ingestion); the exact role/read-authorization policy such a
+  future read endpoint would reuse (expected, by precedent, to mirror
+  `RFQ-EH7`'s floor, but not itself decided here); and — unchanged from
+  before — every item listed in the four bullets immediately below
+  (`custom_args` real-provider lifecycle verification, `SENDING`
+  reconciliation, `UNCORRELATED` investigation tooling, provider status
+  lookup). This implementation has NOT been exercised against a real
+  SendGrid account, credential, or webhook delivery — no such
+  credential exists anywhere in this repository or environment; it is
+  verified only against a locally generated test keypair standing in
+  structurally for SendGrid's own signing mechanism.
+- **`custom_args` full-lifecycle propagation — still unverified.**
+  `RFQ-PD18` (`docs/decisions/ratified.md`) explicitly records that
+  current official SendGrid documentation confirms `custom_args`
+  echoing only for a `processed`-event example, not explicitly for
+  `deferred`, `delivered`, `bounce`, `bounce`/`blocked`, or `dropped`.
+  A webhook endpoint and correlation/mapping code now exist (see the
+  bullet above), but no SendGrid credential exists anywhere in this
+  repository or environment, so this remains exactly as unverified
+  empirically as before implementation — only a locally generated test
+  keypair and synthetic payloads have exercised the endpoint, never a
+  real SendGrid-originated event. The implementation's own fail-safe
+  behavior under this uncertainty (`RFQ-PD18`'s `UNCORRELATED`
+  fallback: a flattened top-level `rfq_dispatch_id`, with a defensive
+  but unverified nested `custom_args.rfq_dispatch_id` fallback) is
+  exercised by `sendgridWebhook.test.ts`, but the underlying provider
+  question itself remains open and would require a future credentialed
+  integration test to close.
+- **`SENDING` recovery via provider delivery evidence (future
+  reconciliation)** — `RFQ-PD10` (`docs/decisions/ratified.md`) records
+  this as a deliberate NOT NOW decision, not a permanent prohibition: no
+  provider delivery event currently transitions a dispatch out of
+  `SENDING`. Whether, and under what exact evidence/authority/
+  idempotency rules, such a reconciliation mechanism should ever exist
+  remains fully OPEN and would require its own separate future decision
+  — restating and not narrowing the identical open position already
+  held by `RFQ-EP8`/`RFQ-EH6`/`RFQ-EH10`.
+- **`UNCORRELATED` provider event investigation tooling** — `RFQ-PD5`
+  (`docs/decisions/ratified.md`) ratifies only that an uncorrelated event
+  must never be auto-assigned a tenant or dispatch, and that a stored
+  `providerMessageId`/`sg_message_id` relationship may be consulted as
+  diagnostic metadata for manual human investigation. No such
+  investigation tooling, query, or UI exists or is ratified — this
+  remains fully OPEN.
 - **Enterprise/legal data residency policy for YGT (general)** — whether
   YGT requires a stronger, absolute data-residency guarantee than the
   capability-level configuration ratified at `RFQ-EP2`/`RFQ-EP3`; this is
-  a business/legal decision, not resolved by this family.
+  a business/legal decision, not resolved by this family or by
+  `RFQ-PD1`–`RFQ-PD20`.
 - **RFQ Communication & Response Event History — persistence/
   implementation** — `RFQ-EH1`–`RFQ-EH10` (`docs/decisions/ratified.md`)
   now RATIFY the semantics in advance of implementation (purpose/

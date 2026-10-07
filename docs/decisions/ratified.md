@@ -3551,3 +3551,433 @@ AI Gateway implementation, does not establish an ERP integration
 foundation, and is not, and must never be read as, a substitute for
 populating `06-integration-model.md` or `07-ai-and-agent-model.md` —
 both remain exactly `NOT YET RECORDED`, unaffected by this entry.
+
+## Provider Delivery & Outcome Confirmation Boundary (RFQ-PD1–RFQ-PD20)
+
+**Naming note:** this family uses the grouped prefix `RFQ-PD` (RFQ
+Provider Delivery), distinguishing it from `RFQ-S1`/`RFQ-S2` (Send),
+`RFQ-R1`–`RFQ-R5` (Response), `RFQ-RT1`–`RFQ-RT5` (Retry/Resend),
+`RFQ-EP1`–`RFQ-EP8` (Email Provider selection), and `RFQ-EH1`–`RFQ-EH10`
+(Event History). None of those families is renamed, renumbered, or
+altered by this family's introduction. **This is a documentation-only
+ratification.** No application code, Prisma schema, migration, test,
+webhook endpoint, or configuration change is introduced by any decision
+in this family — exactly as every preceding RFQ family ratified its own
+semantics before, not after, implementation.
+
+**Decision intent:** to establish the boundary by which this system
+learns, asynchronously and after the fact, what a real email provider
+asserts happened to an already-`SENT` (provider-accepted) RFQ
+communication — delivered, bounced, dropped, or still in progress — and
+to record that assertion honestly, as a separate, non-authoritative,
+provider-sourced historical layer, without ever rewriting the
+authoritative `RFQDispatch` send lifecycle, without ever treating
+provider delivery as supplier receipt, acceptance, or commercial
+agreement, and without introducing any new universal Authority, Actor,
+AuditLog, or event-sourcing abstraction.
+
+**Evidence:** an independent architectural assessment (current-state
+investigation of the RFQ/Event History implementation and candidate
+next-boundary analysis); a subsequent independent adversarial semantic
+review of a proposed decision set for this boundary; two further
+independent verification passes against current official SendGrid/
+Twilio documentation (webhook signature mechanics, event taxonomy,
+`sg_event_id`, `custom_args`/`unique_args`, deferral/block semantics)
+and against the actual repository (confirming no SendGrid credential,
+webhook endpoint, or `custom_args` usage currently exists), explicitly
+distinguishing provider-documented fact from application policy
+throughout; all conducted 2026-10-07/08, read-only, prior to this
+ratification.
+
+### RFQ-PD1 — Delivery Source
+
+**Statement:** SendGrid's Event Webhook is the primary, intended source
+of asynchronous provider delivery facts. A provider status-lookup API
+is not required for the initial boundary and remains a possible future
+supporting/reconciliation mechanism, not ratified now. Provider delivery
+facts must never be collapsed into `RFQDispatch.status`.
+
+**Scope:** Restates and does not modify `RFQ-S1`, `RFQ-EP1`–`RFQ-EP8`.
+
+### RFQ-PD2 — Separate Send Lifecycle and Delivery Lifecycle
+
+**Statement:** `RFQDispatch.status` remains the sole authoritative send
+lifecycle — `PENDING → SENDING → {SENT, SEND_FAILED}`, with the
+existing `SEND_FAILED → SENDING` retry path (`RFQ-RT3`) — entirely
+unchanged by this family. Provider delivery facts are a separate
+epistemic layer, additive on top of an already-`SENT` dispatch, and
+must never silently rewrite the send lifecycle.
+
+**Scope:** Restates and does not modify `RFQ-S1`, `RFQ-RT1`–`RFQ-RT5`,
+`RFQ-EP5`.
+
+### RFQ-PD3 — Primary Correlation Contract
+
+**Statement:** the intended primary correlation mechanism for a future
+SendGrid adapter is `custom_args.rfq_dispatch_id = RFQDispatch.id` — an
+opaque, string-valued, non-PII identifier, used exclusively for exact
+correlation. It is never a tenant identifier and never carries supplier,
+customer, or commercial data. No recipient-based, supplier-based,
+subject-based, timing-based, fuzzy, or heuristic correlation is
+permitted, under any circumstance.
+
+**Explicit non-decisions:** the exact adapter code that sets this value
+is not implemented by this ratification — `app/src/api/
+sendgridEmailSender.ts` does not send `custom_args` today, confirmed by
+direct repository inspection as part of this family's own evidence
+basis. See `RFQ-PD18` for the explicit, unresolved verification status
+this decision deliberately does not paper over.
+
+### RFQ-PD4 — Correlation and Tenant Derivation
+
+**Statement:** the authoritative inbound correlation sequence is:
+
+```
+authenticated provider webhook
+       ↓
+custom_args.rfq_dispatch_id
+       ↓
+exact RFQDispatch lookup
+       ↓
+RFQDispatch.tenantId
+```
+
+Tenant identity must never be accepted from the webhook payload itself.
+Tenant derivation occurs only after both (a) successful provider
+authentication (`RFQ-PD15`) and (b) exact dispatch correlation. If
+correlation fails, the event is `UNCORRELATED` (`RFQ-PD5`) — it is never
+assigned automatically to any tenant or dispatch.
+
+**Scope:** directly mirrors the already-proven `RFQ-R2` pattern (the
+opaque supplier-response token as the sole client-supplied identifier,
+with every other identifier server-derived) — extended, not
+reinterpreted, to this new, unauthenticated-until-verified inbound
+boundary.
+
+### RFQ-PD5 — Uncorrelated Provider Events
+
+**Statement:** an authenticated provider event whose
+`custom_args.rfq_dispatch_id` is missing, malformed, or does not resolve
+to an existing `RFQDispatch` is an **`UNCORRELATED` provider event**:
+authenticated provider evidence exists, but dispatch identity and
+tenant identity are both unknown. No automatic fallback correlation is
+permitted. In particular: recipient matching, supplier matching,
+subject matching, fuzzy matching, and any `providerMessageId`/
+`sg_message_id` transformation heuristic are all explicitly prohibited
+as automatic correlation mechanisms, unless and until separately
+verified and ratified in a future decision. A stored `sg_message_id`/
+`providerMessageId` relationship may be retained and consulted only as
+**diagnostic metadata for manual, human investigation** of an
+`UNCORRELATED` event — never as code that assigns tenant or dispatch
+identity automatically.
+
+**Rationale:** this is the same discipline `RFQ-EH1`'s non-authority
+boundary and the already-ratified "`UNKNOWN` never inferred into a
+stronger fact" principle (`R12`/`SEC-011`) already require, applied to
+a new boundary: absence of safe correlation must not be forced into a
+guessed correlation.
+
+### RFQ-PD6 — Provider Event Identity / Idempotency
+
+**Statement:** provider event identity is represented as
+`(provider, providerEventId)` — for SendGrid, `providerEventId` is
+`sg_event_id`. Database-level uniqueness enforcement is required for
+events possessing a `providerEventId`, because the provider's own
+documentation confirms duplicate webhook deliveries are expected to
+occur, not merely theoretically possible. If a provider event arrives
+without a `providerEventId` at all: it must **not** receive a
+fabricated synthetic identity; it must **not** be falsely treated as
+safely deduplicable; it **may** be persisted with a nullable
+`providerEventId`, explicitly marked as non-deduplicable.
+
+**Canonical separation (must be preserved exactly):**
+```
+(provider, providerEventId) [inbound webhook event dedup] ≠ provider idempotency key [outbound send, RFQ-EP6]
+```
+`RFQ-EP6`'s own ratified non-assumption (SendGrid send-side idempotency
+is not assumed or integrated) is unaffected and unchanged by this entry
+— the two are distinct idempotency concerns, on opposite sides of the
+send/delivery boundary, and must never be conflated.
+
+### RFQ-PD7 — Provider Delivery Vocabulary
+
+**Statement:** the normalized provider delivery layer's base vocabulary
+is `PROCESSED | DEFERRED | DELIVERED | BOUNCE | DROPPED`. Provider
+subtype information must be preserved where semantically relevant — in
+particular, SendGrid's own `event = bounce` / `type = blocked` shape
+must be represented as `eventType = BOUNCE` with a separate
+`providerSubtype = BLOCKED`, **never** as a top-level `BLOCKED` event
+type, which would fabricate a provider event category the provider
+itself does not use at that level.
+
+### RFQ-PD8 — `UNKNOWN` Semantics
+
+**Statement:** `UNKNOWN` is **not** a provider event and must never be
+persisted as a fabricated one. It represents the absence of
+authoritative provider delivery evidence. The system must not
+manufacture an `UNKNOWN` provider-delivery record merely because no
+webhook has yet arrived — absence of evidence remains absence of
+evidence, consistent with `R12`/`SEC-011` and every prior RFQ family's
+own identical discipline (`RFQ-S1`, `RFQ-RT2`, `RFQ-EH2`).
+
+### RFQ-PD9 — Deferred Semantics
+
+**Statement:** `DEFERRED` is non-terminal provider delivery evidence —
+confirmed, by current official SendGrid documentation, to mean active
+retry for up to 72 hours. It must not become `DELIVERED`, `BOUNCE`, or
+`DROPPED`; must not trigger an application-level retry; and must not
+reclaim the originating `RFQDispatch`'s send attempt. When a deferred
+message exhausts its retry window, SendGrid reports this as
+`event = bounce` / `type = blocked` — the system preserves this
+distinction (`RFQ-PD7`) and must not silently normalize it into an
+ordinary bounce.
+
+### RFQ-PD10 — Delivery Does Not Recover `SENDING`
+
+**Statement:** provider delivery events do not currently transition a
+dispatch out of `SENDING` into any other send-lifecycle state. This is
+a deliberate **NOT NOW** decision, not an unconditional, permanent
+prohibition. A future reconciliation mechanism may be considered, but
+only through its own separate, future semantic/architecture decision
+explicitly defining: the evidence requirements (e.g., exact-correlation
+via `custom_args`, never a weaker heuristic); which provider outcomes
+would ever qualify (a genuinely terminal outcome, never `DEFERRED`);
+the authority/capability permitted to perform such a transition
+(`U3`); the exact transition rule; its own idempotency; and anomaly
+handling. No such reconciliation mechanism is ratified, implied, or
+foreclosed by this family.
+
+**Scope:** restates, and does not modify, `RFQ-EP8`, `RFQ-EH6`,
+`RFQ-EH10` — all of which already independently decline to resolve this
+same boundary. This entry adds the explicit "not now, not never, not
+yet decided" framing those entries already imply.
+
+### RFQ-PD11 — No Automatic Retry From Delivery Boundary
+
+**Statement:** provider delivery events must not trigger
+application-level retry. In particular, `DEFERRED`, `BOUNCE`, `DROPPED`,
+or a `BOUNCE`/`BLOCKED` subtype must never automatically invoke the
+existing `SEND_FAILED → SENDING` retry path (`RFQ-RT3`). Retry remains
+exclusively a send-lifecycle concern, untouched by this family.
+
+**Scope:** restates and reinforces `RFQ-RT2`'s/`RFQ-EP6`'s already-
+ratified principle that retry must never substitute for resolving
+semantic ambiguity.
+
+### RFQ-PD12 — Provider Isolation
+
+**Statement:** provider-specific implementation detail — webhook
+signature mechanics, provider headers, `sg_event_id`, `sg_message_id`,
+provider event names, provider subtypes, provider payload structure,
+and the provider verification key — remains inside the provider
+integration boundary. Procurement Core may store normalized provider
+facts and opaque provider identifiers; provider-specific interpretation
+does not leak into generic domain semantics.
+
+**Scope:** directly extends the already-proven isolation discipline
+`EmailSender`/`sendgridEmailSender.ts` already demonstrate for outbound
+send, to this new inbound boundary.
+
+### RFQ-PD13 — Dedicated Provider Delivery Event Model
+
+**Statement:** provider delivery facts must be represented by a
+dedicated model, separate from `RFQCommunicationEvent`. The two sit in
+genuinely different epistemic categories: `RFQCommunicationEvent`
+records facts about actions this system itself took or directly
+solicited (a dispatch we created, a send attempt we made, a response we
+received through our own authenticated/token-scoped channel);  a
+provider delivery event is externally asserted, asynchronous,
+at-least-once, independently provider-identified, potentially
+duplicated, and potentially out of arrival order relative to when it
+actually occurred — a category `RFQCommunicationEvent`'s own existing
+three event types were never designed to hold, and whose own Non-Goals
+(`RFQ-EH1`–`RFQ-EH10`) explicitly name "delivery/bounce webhook audit"
+and "a SendGrid Event Webhook implementation" as not part of that
+family.
+
+**This is explicitly NOT generic event sourcing.** The dedicated model
+must remain narrowly scoped to provider delivery facts only and must
+not become a generic audit/event store — the same closed-vocabulary,
+narrow-field discipline `RFQCommunicationEvent` itself already
+demonstrates applies equally here, to a second, genuinely distinct
+category, not as license for an open-ended one.
+
+**Explicit non-decisions:** the exact table/column design, Prisma
+relations, indexes, and service functions are implementation detail,
+deferred — no schema, migration, or code is introduced by this entry.
+
+### RFQ-PD14 — Provider Event Ordering
+
+**Statement:** the provider delivery event model must preserve both the
+provider's own event-occurrence timestamp and the system's own
+receipt/ingestion timestamp as two distinct values — arrival order must
+never be assumed to equal provider chronology. No complex terminal-event
+precedence or reconciliation algorithm is introduced by this family;
+one may be introduced later only if a concrete use case requires it and
+receives its own separate architectural ratification.
+
+### RFQ-PD15 — Webhook Authenticity
+
+**Statement:** SendGrid webhook authenticity must be verified using the
+provider-documented mechanism: ECDSA signature, the
+`X-Twilio-Email-Event-Webhook-Signature` and
+`X-Twilio-Email-Event-Webhook-Timestamp` headers, a SHA-256 hash of the
+timestamp concatenated with the **raw** HTTP request body (confirmed,
+by current official SendGrid documentation, as the exact signed
+content), and the provider's dashboard-obtained verification public
+key. Raw request bytes must be available for verification before any
+JSON parsing or other transformation of the payload — confirmed, not
+assumed, as a provider requirement: SendGrid's own documentation warns
+that converting to a JSON string before verifying "may remove
+characters that were used as part of the generated signature."
+
+Signature verification must happen before: tenant derivation; dispatch
+correlation; provider-fact creation; any domain processing of any kind.
+Invalid verification must fail closed. The application-level policy —
+explicitly an application decision, not a SendGrid requirement, since
+SendGrid's own documentation does not specify a required failure
+response — is: do not derive tenant; do not perform domain processing;
+do not create a tenant-scoped provider fact; return a non-success HTTP
+response; log the security failure without trusting the payload
+content.
+
+**Timestamp freshness tolerance (explicitly application policy, NOT a
+SendGrid requirement):** current official SendGrid documentation does
+not specify an exact replay-tolerance window. The initial application
+policy is **300 seconds**, applied to the webhook's own signing
+timestamp (the freshness of the HTTP delivery attempt itself) — not to
+the age of the underlying business event it reports, which may
+legitimately be up to 72 hours old (`RFQ-PD9`) without this tolerance
+window being relevant to it. This value must never be documented or
+represented as a SendGrid-mandated value.
+
+### RFQ-PD16 — Webhook Verification Key Management
+
+**Statement:** the initial architecture uses exactly one configured
+SendGrid webhook verification public key, obtained via the provider's
+documented dashboard mechanism, stored in application configuration; a
+manual, deliberate, operator-performed procedure for key replacement if
+ever needed; no automated rotation; no multi-key rollover mechanism.
+Current official SendGrid documentation does not specify any rotation
+cadence, multi-key support, or rollover protocol — this is an
+application architecture decision made in the absence of such
+documented semantics, not a claim that the provider guarantees the key
+will never change. Should future provider documentation or operational
+need ever introduce rotation semantics, that becomes its own, separate,
+future architecture decision.
+
+### RFQ-PD17 — `custom_args` Constraints
+
+**Statement:** the future outbound adapter change implied by
+`RFQ-PD3` — `custom_args.rfq_dispatch_id = RFQDispatch.id` — must carry:
+a string value only; an opaque identifier; no PII; no supplier/customer
+identity; no email address; no commercial content; no tenant
+identifier; no metadata beyond the one dispatch id. The documented
+aggregate `custom_args` size limit is 10,000 bytes; one opaque dispatch
+identifier is comfortably within this constraint.
+
+**Explicit non-decisions:** this ratifies the target contract only.
+Confirmed by direct repository inspection as part of this family's own
+evidence basis: the existing adapter (`app/src/api/
+sendgridEmailSender.ts`) does not yet send `custom_args` in any form —
+implementation is a separate, subsequent step, not performed by this
+ratification.
+
+### RFQ-PD18 — `custom_args` Lifecycle Verification Status
+
+**Statement:** the architecture explicitly records its own current
+evidence boundary, rather than converting an incomplete fact into an
+unsupported provider guarantee: current official SendGrid documentation
+demonstrates `custom_args` echoing explicitly only for a `processed`-
+event example; it does not explicitly confirm propagation for
+`deferred`, `delivered`, `bounce`, `bounce`/`blocked`, or `dropped`
+specifically. The current repository has no SendGrid credential, no
+webhook endpoint, and no publicly reachable test environment — full
+lifecycle empirical verification has **not** been performed, and this
+ratification does not claim otherwise.
+
+**The implementation must remain safe under this exact uncertainty:**
+
+```
+missing custom_args
+       ↓
+UNCORRELATED (RFQ-PD5)
+       ↓
+no tenant derivation
+       ↓
+no automatic fallback
+```
+
+This fail-safe behavior is the authoritative application rule,
+independent of whether or when future credentialed testing ever
+confirms broader `custom_args` propagation. A future credentialed
+integration test may verify fuller lifecycle propagation; such
+verification is not required for the application to already fail
+safely today.
+
+### RFQ-PD19 — No Queue / Worker Yet
+
+**Statement:** no queue or background worker is introduced as part of
+this boundary. The initial semantic flow is conceptually: webhook →
+authenticate → parse → correlate → idempotency check → persist provider
+fact — entirely synchronous, within the existing single-process model.
+Infrastructure may evolve later if concrete operational requirements
+justify it; a queue must not be introduced merely because the webhook
+is asynchronous in origin.
+
+**Scope:** restates and does not modify this repository's own
+independent, prior conclusion that queue/worker infrastructure remains
+premature absent a concrete, already-decided asynchronous job to run.
+
+### RFQ-PD20 — Provider Delivery Is Not Supplier Receipt
+
+**Statement:** provider delivery evidence must never be interpreted as
+proof that the supplier opened, read, accepted, or responded to the
+RFQ, or accepted any commercial term or PurchaseOrder. Specifically:
+
+```
+DELIVERED ≠ SUPPLIER_RECEIVED ≠ SUPPLIER_READ ≠ SUPPLIER_ACCEPTED
+```
+
+Delivery is provider-level evidence only — the direct extension, to
+this new boundary, of `RFQ-EP5`'s already-ratified "accepted ≠
+delivered" principle, carried one step further: delivered ≠ received by
+a human, read, or agreed to.
+
+### Canonical separation (must be preserved exactly)
+
+```
+Provider delivery fact ≠ RFQDispatch.status (send lifecycle)
+Provider delivery fact ≠ supplier receipt/read/acceptance
+Provider delivery fact ≠ commercial agreement
+Provider delivery fact ≠ Execution Authority
+Provider delivery fact ≠ Approval
+DELIVERED ≠ SUPPLIER_RECEIVED ≠ SUPPLIER_READ ≠ SUPPLIER_ACCEPTED
+UNKNOWN (absence of evidence) ≠ a persisted provider event
+DEFERRED ≠ terminal outcome
+BOUNCE/BLOCKED ≠ ordinary BOUNCE (subtype, not a new top-level event)
+(provider, providerEventId) [inbound dedup] ≠ provider idempotency key [outbound send, RFQ-EP6]
+custom_args.rfq_dispatch_id ≠ sg_message_id/providerMessageId correlation (primary vs. diagnostic-only)
+300-second replay tolerance ≠ a SendGrid-documented requirement (application policy only)
+UNCORRELATED event ≠ automatically assigned to any tenant or dispatch
+```
+
+### Non-Goals (explicitly not ratified by RFQ-PD1–RFQ-PD20)
+
+Any webhook endpoint, adapter change, Prisma schema, migration, or test
+— this remains a documentation-only ratification. Provider status
+lookup as an implemented mechanism. Any `SENDING` reconciliation
+mechanism (deferred to its own future decision per `RFQ-PD10`). Any
+automatic retry triggered by a delivery event. Any queue/worker
+infrastructure. A universal cross-domain `AuditLog`, event bus, or
+event-sourcing architecture. A universal Authority/Actor entity. Any
+broader enterprise/legal data-residency policy. Each of these may
+require its own separate future ratification if a concrete trigger
+arises — none is resolved, narrowed, or foreclosed by this family. All
+remain exactly as recorded in `open.md`.
+
+**Relationship to AI/ERP architecture:** this family does not initiate
+AI Gateway implementation, does not establish an ERP integration
+foundation, and is not a substitute for populating
+`06-integration-model.md` or `07-ai-and-agent-model.md` — both remain
+exactly `NOT YET RECORDED`, unaffected by this entry.

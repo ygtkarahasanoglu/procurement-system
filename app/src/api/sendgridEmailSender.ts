@@ -39,12 +39,21 @@ function loadSendGridConfigFromEnv(): SendGridConfig {
 // produced the final to/subject/body; this is a pure transport mapping.
 // text/plain only, matching the existing composer's own plain-text-only
 // discipline (no HTML introduced here).
+//
+// RFQ-PD3/RFQ-PD17 (docs/decisions/ratified.md): input.correlationId
+// (the opaque RFQDispatch id — see emailSender.ts) is mapped onto
+// SendGrid's own `custom_args.rfq_dispatch_id`, exactly and only when
+// present. This is the one place the provider-neutral `correlationId`
+// concept is ever translated into SendGrid vocabulary (RFQ-PD12) — a
+// string value only, no PII, no tenant/supplier identity, well under
+// the documented 10,000-byte aggregate custom_args limit.
 function buildRequestBody(config: SendGridConfig, input: SendEmailInput): string {
   return JSON.stringify({
     personalizations: [{ to: [{ email: input.to }] }],
     from: { email: config.fromEmail },
     subject: input.subject,
     content: [{ type: "text/plain", value: input.body }],
+    ...(input.correlationId ? { custom_args: { rfq_dispatch_id: input.correlationId } } : {}),
   });
 }
 

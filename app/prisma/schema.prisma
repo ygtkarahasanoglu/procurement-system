@@ -38,6 +38,7 @@ model Tenant {
   approvals        Approval[]
   purchaseOrders   PurchaseOrder[]
   rfqCommunicationEvents RFQCommunicationEvent[]
+  rfqProviderDeliveryEvents RFQProviderDeliveryEvent[]
 }
 
 // Minimum actor representation. Role is a plain string for V1 — see
@@ -212,6 +213,7 @@ model RFQDispatch {
 
   supplierQuotes SupplierQuote[]
   communicationEvents RFQCommunicationEvent[]
+  providerDeliveryEvents RFQProviderDeliveryEvent[]
 
   @@index([tenantId])
   @@index([sourcingEventId])
@@ -269,6 +271,77 @@ model RFQCommunicationEvent {
 
   @@index([tenantId])
   @@index([rfqDispatchId])
+}
+
+// Provider Delivery & Outcome Confirmation Boundary (RFQ-PD1–RFQ-PD20,
+// docs/decisions/ratified.md). A dedicated, narrowly-scoped persistence
+// for asynchronous SendGrid Event Webhook facts — deliberately separate
+// from RFQCommunicationEvent (RFQ-PD13): this records externally
+// asserted, at-least-once, provider-identified delivery evidence, not
+// an action this system itself took or solicited. NOT the authoritative
+// RFQDispatch send lifecycle (RFQ-PD2), NOT supplier receipt/read/
+// acceptance (RFQ-PD20), NOT a generic event-sourcing/audit store
+// (RFQ-PD13's own explicit Non-Goal).
+//
+// tenantId/rfqDispatchId are both nullable: correlation only succeeds
+// after authenticated-webhook + exact custom_args.rfq_dispatch_id
+// lookup (RFQ-PD4); an event that cannot be safely correlated is
+// persisted with correlationState = UNCORRELATED and both left null
+// (RFQ-PD5) — never a heuristic fallback assignment. Because a row can
+// legitimately carry no tenantId at all, this model is deliberately
+// EXCLUDED from db/client.ts's TENANT_SCOPED_MODELS guard (mirroring
+// the existing, documented Tenant/ExternalIdentity/Session exclusions)
+// — writes go through the bare `prisma` client, and any future
+// tenant-scoped read of CORRELATED rows must filter by `tenantId`
+// explicitly in its own `where`, the same way every service already
+// did before the R15 backstop existed.
+//
+// eventType is the ratified closed, provider-neutral vocabulary:
+// PROCESSED | DEFERRED | DELIVERED | BOUNCE | DROPPED (RFQ-PD7).
+// providerSubtype preserves provider-specific detail where ratified as
+// meaningful — e.g. SendGrid's `type=blocked` on a bounce becomes
+// eventType=BOUNCE, providerSubtype=BLOCKED, never a top-level BLOCKED
+// event (RFQ-PD7). UNKNOWN is never persisted here (RFQ-PD8) — absence
+// of a webhook is absence of evidence, not a row.
+//
+// providerMessageId (sg_message_id) is retained only as diagnostic
+// metadata for manual investigation of an UNCORRELATED event (RFQ-PD5)
+// — application code must never use it for automatic correlation.
+//
+// (provider, providerEventId) is database-unique for deduplication
+// (RFQ-PD6). Postgres's default unique-index semantics treat every NULL
+// providerEventId as distinct from every other NULL (NULLS DISTINCT,
+// the Postgres default — not overridden here), matching the ratified
+// "NULL means explicitly non-deduplicable" requirement exactly: many
+// rows may share provider="SENDGRID" with providerEventId=null without
+// ever violating this constraint.
+model RFQProviderDeliveryEvent {
+  id String @id @default(uuid())
+
+  provider        String  // "SENDGRID" — only provider implemented (RFQ-PD12)
+  providerEventId String? // sg_event_id; null = explicitly non-deduplicable (RFQ-PD6)
+
+  correlationState String // CORRELATED | UNCORRELATED (RFQ-PD5)
+
+  tenantId      String?
+  tenant        Tenant?      @relation(fields: [tenantId], references: [id])
+  rfqDispatchId String?
+  rfqDispatch   RFQDispatch? @relation(fields: [rfqDispatchId], references: [id])
+
+  eventType       String  // PROCESSED | DEFERRED | DELIVERED | BOUNCE | DROPPED (RFQ-PD7)
+  providerSubtype String? // e.g. BLOCKED — bounce subtype only (RFQ-PD7)
+
+  providerEventAt DateTime // provider-reported event timestamp (RFQ-PD14)
+  receivedAt      DateTime @default(now()) // system ingestion timestamp (RFQ-PD14)
+
+  // Diagnostic-only correlation aid for UNCORRELATED investigation
+  // (RFQ-PD5) — must never be read by any automatic correlation code path.
+  providerMessageId String?
+
+  @@unique([provider, providerEventId])
+  @@index([tenantId])
+  @@index([rfqDispatchId])
+  @@index([correlationState])
 }
 
 // A quote "header" from one supplier for one SourcingEvent. The

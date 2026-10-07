@@ -14,6 +14,18 @@ export interface SendEmailInput {
   to: string;
   subject: string;
   body: string;
+
+  // RFQ-PD3/RFQ-PD17 (docs/decisions/ratified.md): an opaque,
+  // provider-neutral correlation identifier — in practice always the
+  // sending RFQDispatch.id — threaded through so a future inbound
+  // provider-delivery webhook can correlate back to it. Deliberately
+  // named without any provider vocabulary: this interface must never
+  // leak SendGrid-specific concepts (RFQ-PD12). Only the SendGrid
+  // adapter (sendgridEmailSender.ts) knows this becomes
+  // `custom_args.rfq_dispatch_id`. Optional so every existing caller
+  // and test double is unaffected; absent whenever a sender has no
+  // correlation use for it.
+  correlationId?: string;
 }
 
 // Three outcomes, not two — collapsing "timeout/unknown" into either

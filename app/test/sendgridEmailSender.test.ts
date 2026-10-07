@@ -169,4 +169,21 @@ describe("sendGridEmailSender", () => {
     expect(logged).not.toContain(input.body);
     expect(logged).not.toContain("raw-token-abc123");
   });
+
+  // RFQ-PD3/RFQ-PD17 (docs/decisions/ratified.md): custom_args threading.
+  describe("custom_args (RFQ-PD3/RFQ-PD17)", () => {
+    it("18. input.correlationId is mapped onto custom_args.rfq_dispatch_id", async () => {
+      const fetchMock = mockFetchResolved(202);
+      await sendGridEmailSender.send({ ...input, correlationId: "dispatch-123" });
+      const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+      expect(body.custom_args).toEqual({ rfq_dispatch_id: "dispatch-123" });
+    });
+
+    it("19. no correlationId -> no custom_args field at all, never an empty/null placeholder", async () => {
+      const fetchMock = mockFetchResolved(202);
+      await sendGridEmailSender.send(input);
+      const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+      expect(body).not.toHaveProperty("custom_args");
+    });
+  });
 });

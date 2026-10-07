@@ -283,6 +283,10 @@ async function performRFQDispatchSendAttempt(
     to: composed.to,
     subject: composed.subject,
     body: composed.body,
+    // RFQ-PD3 (docs/decisions/ratified.md): the opaque dispatch id this
+    // send attempt belongs to — never any other identifier (no tenant,
+    // no supplier, no commercial content).
+    correlationId: validRfqDispatchId,
   });
 
   // Deliberately no logging call of any kind anywhere in this file
