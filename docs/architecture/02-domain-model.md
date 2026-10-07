@@ -488,6 +488,20 @@ creation, ERP quantity, or fulfillment quantity — all remain `OPEN` /
 DecisionPackage→PO cardinality, QuoteLine, PO Line, and quantity
 allocation are all unaffected by QS-C2).
 
+**DecisionPackage scope and Allocation boundary:** `RATIFIED — DP-1` /
+`DP-2` / `DP-3` (`docs/decisions/ratified.md`) — `DecisionPackage` remains
+single-supplier-scoped (one Supplier, one QuoteVersion, one Selected
+Quantity), consistent with QS-C1/QS-C2 above; multiple DecisionPackages
+may exist under one SourcingEvent today (e.g., a 60/40 split across two
+suppliers) without this constituting an authoritative Allocation fact;
+and no new `Allocation` domain entity is introduced at this time. `DP-3`
+records three explicit triggers (cross-decision quantity invariant,
+combined approval, revision/current-plan semantics) under which
+Allocation is reopened for its own future ratification. None of `D1`
+(multi-supplier combination), `D3`–`D7`, `Q3`'s allocation-related items,
+or any other item referenced above is resolved, narrowed, or closed by
+`DP-1`–`DP-3`.
+
 ---
 
 ## 10. Historical Procurement Context

@@ -2414,3 +2414,176 @@ Approval ≠ Supplier Response Authorization
 Accepting a Supplier Response does not mean a procurement decision has
 been approved, and does not itself authorize anything beyond the single,
 narrow act of recording that one response.
+
+## DecisionPackage Semantics & Allocation Boundary (DP-1–DP-3)
+
+**Naming note:** this family establishes a new grouped prefix, `DP-`
+(DecisionPackage), distinguishing it from three unrelated things it must
+never be confused with: the pre-existing bare `D-1`–`D-6` items in
+`docs/decisions/open.md` (role terminology, authorization-verb layering,
+delegated approval, cancellation, compromised-worker control — unrelated
+topics); the informal `D1`–`D7` cross-references used inside `QS-C1`/
+`QS-C2`'s own non-decisions text (multi-supplier combination, who/what
+may construct a selection, etc.); and the `D5-R1`/`D5-R2`
+cancellation-lifecycle family. None of those is renamed, renumbered, or
+altered by this family's introduction.
+
+### DP-1 — DecisionPackage Semantic Scope
+
+**Statement:** `DecisionPackage` is, and remains, a single-supplier-scoped
+atomic commercial decision: one chosen `Supplier`, one `QuoteVersion`,
+one `SelectedQuantity`. This restates and makes canonically explicit what
+already follows from `QS-C1` (Selected Quantity is drawn "from a supplier
+quote"), `QS-C2` (Approval authorizes the Selected Quantity "as
+represented in the frozen DecisionPackage" — singular), and `CR-A`/
+`CR-B.1`/`CR-B.2` (PurchaseOrder content derives from and corresponds to
+"the approved decision represented in the frozen DecisionPackage" —
+singular).
+
+**Evidence:** explicit human ratification, following an independent
+read-only "DecisionPackage Semantics & Allocation Boundary" assessment
+series (repository-state analysis of `decisionService.ts`,
+`approvalService.ts`, `purchaseOrderService.ts`, `recommendationService.ts`,
+`quoteService.ts`, and the Prisma schema, cross-checked against `QS-C1`,
+`QS-C2`, `CR-A`, `CR-B.1`, `CR-B.2`, `CT-A2`, `RL-C1`–`RL-C4`, and `Q3`),
+2026-10-07.
+
+**Scope:** Restates, and does not modify, reinterpret, or extend, `QS-C1`,
+`QS-C2`, `CR-A`, `CR-B.1`, `CR-B.2`, `CR-C`, `CR-D1`, `CR-D2`, `SC-1`,
+`Q3`, `Q3-CV`, `CT-A1`, `CT-A2`, `APO-D1`, `APO-D2`, or `RL-C1`–`RL-C4` —
+all remain exactly as previously ratified. `CR-C`'s Recommendation ≠
+Decision separation is unaffected and unchanged.
+
+**Explicit non-decisions:** whether this scope is ever extended to
+multi-supplier combination (`QS-C1`'s own named future question,
+informal `D1`); who/what may construct a selection (informal `D2`); any
+allocation, MOQ, undercoverage/overcoverage, supplier-substitution, or
+quote-revision/requote policy; DecisionPackage→PO or Approval→PO
+cardinality (`Q3`, still OPEN); and the `DecisionPackage.SUPERSEDED`
+reference appearing in `CT-A2`'s own text, which this entry does not
+create, confirm, or ratify as implemented (see `DP-3`'s documentation
+note below). None of these may be inferred from DP-1.
+
+### DP-2 — Multi-Supplier Representation Without an Allocation Fact
+
+**Statement:** Today, a single `SourcingEvent` may have more than one
+`DecisionPackage` (e.g., Supplier A = 60, Supplier B = 40 against a
+100-unit `RequestLine`), each independently progressing through its own
+`DecisionPackage → Approval → PurchaseOrder` chain. This structure is
+ratified here as valid and usable as-is. **It does not, by itself,
+constitute or represent an authoritative "100 = 60 + 40" Allocation
+fact** — no entity, field, or relationship in the current model
+aggregates, validates, or certifies that such a set of DecisionPackages
+correctly or completely covers a RequestLine's need.
+
+**Evidence:** same independent assessment series as `DP-1`, including an
+empirical, read-only verification run against the test database during
+that series (two independent DecisionPackage→Approval→PurchaseOrder
+chains created under one SourcingEvent, summing to a 100-unit
+RequestLine, with zero schema/service error, then fully cleaned up).
+
+**Scope:** Confirms only that the multi-DecisionPackage structure is
+usable and that it does not itself constitute an Allocation fact. Does
+not modify `RL-C1`–`RL-C4`, `QS-C1`, `QS-C2`, `CR-A`, `CR-B.1`, `CR-B.2`,
+`APO-D1`, `APO-D2`, or `Q3` — all remain exactly as previously ratified.
+
+**Explicit non-decisions:** whether such a set is commercially valid,
+complete, over-, or under-covering (`Q3` items 4–7, still OPEN); whether
+it requires a combined Approval (see `DP-3` Trigger B); any cardinality
+rule beyond what already exists (`Q3` item 11, still OPEN); and any UI,
+query, or reporting behavior for such a set. None of these may be
+inferred from DP-2.
+
+### DP-3 — Allocation Deferral
+
+**Statement:** No new authoritative `Allocation` domain entity is
+introduced into Procurement Core at this time. This is an explicit
+deferral, not a rejection of the concept: `Allocation` (or an equivalent
+authoritative aggregate across multiple `DecisionPackage`s) remains
+available to be introduced later, if and when a concrete product or
+domain requirement makes it necessary.
+
+**Named triggers.** Any of the following, if and when it becomes a
+concrete requirement, reopens the Allocation question for its own
+independent future ratification:
+
+- **Trigger A — Cross-decision quantity invariant.** A concurrency-safe,
+  authoritative requirement that a set of DecisionPackages' selected
+  quantities must (e.g.) not exceed a RequestLine's requested quantity
+  (illustrative: 60+40 valid, 60+40+20 invalid).
+- **Trigger B — Combined approval.** A business requirement for a single
+  authoritative fact that an entire multi-supplier commitment (e.g., the
+  full 100 units, not each 60/40 part separately) was approved together.
+- **Trigger C — Revision / current-plan semantics.** A requirement to
+  answer, at the aggregate level, "which generation/revision/requote is
+  the current authoritative plan" once multiple such generations can
+  exist under one SourcingEvent.
+
+**Evidence:** same independent assessment series as `DP-1`/`DP-2`,
+including cross-checks against `02-domain-model.md` §17's existing
+"Historical Purchase" precedent (deferring a comparable new-aggregate
+question until a concrete modeling need arises), the constitutional
+principles in `01-system-principles.md` (#1, #2, #17 — AI is not system
+of record; Procurement Core is the sole authoritative business state and
+is authoritative for commercial facts), and `CR-C`'s existing
+Recommendation ≠ Decision separation.
+
+**Scope:** Establishes only that (a) Allocation is not added now, and
+(b) the three named triggers are the explicit, recorded conditions under
+which the question is reopened. Does not itself resolve any of the three
+triggers, does not pre-select a model/shape for a future Allocation
+entity, and does not modify any other ratified decision.
+
+**Recommendation boundary:** `Recommendation → DecisionPackage` remains
+the ratified shape; `Recommendation → Allocation → DecisionPackage` is
+explicitly NOT ratified by this entry or any other. A future
+Recommendation proposing a multi-supplier combination (e.g., 60 A + 40
+B) does not, by itself, require or imply Allocation — the human decision
+layer may translate such a proposal into multiple independent
+`DecisionPackage`s, exactly as `DP-2` already describes.
+`RecommendationRecord`'s own schema/cardinality (today single-QuoteVersion-
+scoped) is unaffected by this entry and may be extended, if ever needed,
+independently of whether Allocation is ever introduced.
+
+**AI boundary:** consistent with `01-system-principles.md` principles
+#1/#2/#17 and with `U3`/`B2`/`C`: if Allocation is ever introduced via a
+future Trigger A/B/C ratification, its authoritative definition belongs
+to Procurement Core, never to an AI Gateway or AI-facing component. The
+anticipated future existence of AI-generated multi-supplier
+recommendations is not itself a trigger and does not justify introducing
+Allocation now.
+
+**RFQ boundary:** RFQ fan-out to multiple suppliers (`R1`,
+`SourcingEvent → RFQDispatch × N`) is a sourcing/communication-breadth
+concept, independent of whether the resulting commercial decision is
+single- or multi-supplier. RFQ reaching multiple suppliers does not, by
+itself, constitute or require any of the three triggers.
+
+**ERP boundary:** for simple multi-PurchaseOrder correlation under one
+SourcingEvent (e.g., two POs resulting from a 60/40 split), the existing
+`PurchaseOrder → Approval → DecisionPackage.sourcingEventId` chain is
+sufficient for read-side grouping/correlation without Allocation.
+Allocation is reopened for ERP purposes only if a future ERP integration
+requires an authoritative, pre-validated combined-plan fact before
+PurchaseOrders are created or transmitted — which is Trigger A or B, not
+a distinct ERP-specific trigger.
+
+**Explicit non-decisions:** DP-3 does not decide, resolve, or narrow any
+of: multi-supplier allocation business policy; MOQ; undercoverage/
+overcoverage; supplier substitution; one-Approval-many-PO (`Q3` item 11);
+combined approval workflow mechanics; requote/revision policy;
+DecisionPackage supersession mechanism; `RecommendationRecord` multi-line
+schema; AI Gateway implementation; ERP integration semantics; Execution
+Authority (`B2`); RLS; RFQ resend/revision policy; or any other item in
+`docs/decisions/open.md`. All remain exactly as OPEN as before this
+entry.
+
+**Documentation note (observational only — not itself ratified or
+corrected here):** `CT-A2`'s existing text refers to "the existing
+`DecisionPackage.SUPERSEDED` lifecycle state." As of this ratification,
+no `SUPERSEDED` value exists in `app/prisma/schema.prisma` or in any
+service implementation — this entry records that observation for future
+reference only; it does not correct, retract, or reinterpret `CT-A2`'s
+text, and does not ratify `SUPERSEDED` as implemented or as a required
+future mechanism.
+

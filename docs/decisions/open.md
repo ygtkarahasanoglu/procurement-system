@@ -107,6 +107,18 @@ event should be treated as an error and corrected, not built upon.
   submit more than one response/quote version for the same RFQDispatch or
   SourcingEvent (cross-referenced from the existing `QuoteVersion`
   schema comment; not previously registered in this document).
+- **Allocation (cross-DecisionPackage aggregate)** — `DP-3`
+  (`docs/decisions/ratified.md`) ratifies only that no `Allocation`
+  domain entity is introduced now, and records three explicit triggers
+  under which this is reopened: cross-decision quantity invariant
+  (Trigger A), combined approval (Trigger B), and revision/current-plan
+  semantics (Trigger C). None of the three triggers, and none of the
+  policy questions they would require (multi-supplier allocation
+  business policy, MOQ, undercoverage/overcoverage, supplier
+  substitution, one-Approval-many-PO, combined-approval workflow
+  mechanics, requote/revision mechanics, DecisionPackage supersession
+  mechanism), is resolved by `DP-1`–`DP-3` — all remain OPEN exactly as
+  before.
 - **Future Execution Authority (`B2`) design** — the concrete design/
   implementation of Execution Authority itself remains unaddressed; `B2`
   ratifies only that it is conceptually distinct from Approval/
