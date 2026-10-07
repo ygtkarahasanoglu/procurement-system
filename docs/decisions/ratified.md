@@ -3034,7 +3034,7 @@ residency/handling; any broader enterprise/legal data-residency policy
 for YGT; any provider SDK, credential, environment configuration, or
 adapter implementation. All remain exactly as recorded in `open.md`.
 
-## RFQ Communication & Response Event History (RFQ-EH1–RFQ-EH9)
+## RFQ Communication & Response Event History (RFQ-EH1–RFQ-EH10)
 
 **Naming note:** this family uses the grouped prefix `RFQ-EH` (RFQ Event
 History), distinguishing it from `RFQ-S1`/`RFQ-S2` (Send), `RFQ-R1`–
@@ -3431,6 +3431,87 @@ distinguish concurrent in-flight attempts, not merely record completed
 ones — `SendAttempt` remains available for its own separate, future
 ratification, exactly as already stated.
 
+### RFQ-EH10 — Current State Authority and Event History Write Failure
+
+**Statement:**
+
+1. `RFQDispatch`'s current state is Procurement Core's authoritative
+   workflow state.
+2. Event History is a non-authoritative historical record.
+3. The `SENT`/`SEND_FAILED` final-state transition must be committed as
+   the primary state once the provider outcome has been deterministically
+   determined (`RFQ-S1`/`RFQ-RT2`).
+4. Committing that final-state transition must **not** depend on the
+   corresponding Event History record being written successfully. The
+   Event History insertion attempt itself remains mandatory and must
+   always be made — only the *success* of that attempt is non-blocking
+   for the authoritative state commit; the attempt itself is never
+   skipped, conditioned, or made optional.
+5. If the Event History insert for that transition fails:
+   - the already-committed `RFQDispatch` state is **not** rolled back;
+   - the dispatch remains `SENT` or `SEND_FAILED`, exactly as the
+     provider outcome determined;
+   - the gap in Event History is a historical-recording/bookkeeping
+     failure, nothing more;
+   - that failure does **not** revert current workflow state back to
+     `SENDING`;
+   - `performRFQDispatchSendAttempt`'s determination of the correct
+     state outcome from the external provider's result is never made to
+     depend on Event History's own availability.
+6. Event History insertion failure must be logged.
+7. This decision does **not** ratify any missing-record recovery or
+   reconciliation mechanism for Event History.
+8. Should such a recovery/reconciliation mechanism ever be needed, it
+   requires its own, separate future decision.
+9. The `UNKNOWN` boundary (`RFQ-EH6`) is unchanged by this entry:
+   `RFQDispatch` remains `SENDING` on an `UNKNOWN` outcome; the
+   `UNKNOWN` event is persisted in its own separate local transaction;
+   and a failure of that `UNKNOWN` event insert does not change the
+   existing `SENDING` state in any way.
+10. The existing transaction boundaries for the other two event types
+    are unchanged: `RFQDispatch` creation and its corresponding creation
+    event remain considered for the same local transaction; the existing
+    `RFQ-R4` supplier-response transaction and its corresponding
+    response event likewise remain considered for the same local
+    transaction. Nothing in this entry revisits those two pairings —
+    the precedence question this entry resolves is specific to the
+    `SENT`/`SEND_FAILED` pairing, the one case where a real,
+    irreversible external action (the provider's actual accept/reject)
+    already occurred before the local write.
+
+**Rationale:** Provider outcome and `RFQDispatch`'s current state stand
+in an authoritative relationship — the state transition *is* the
+record of what the provider actually did. Event History is a forensic/
+history surface, layered on top, never underneath. A historical-record
+failure must not corrupt, revert, or cast doubt upon the authoritative
+current state. This is the direct, necessary consequence of `RFQ-EH1`'s
+own "Event History ≠ current workflow state / Procurement Core
+authoritative state" boundary — this entry makes that consequence
+explicit and operational for the one pairing where the two could
+otherwise be wrongly conflated.
+
+**This decision does NOT mean Event History is optional or
+unimportant.** Event History remains durable, structured, and
+tenant-scoped exactly as `RFQ-EH1`–`RFQ-EH9` already establish. It is
+simply not at the same authority level as primary workflow state — a
+statement about precedence between two real, both-intended-to-exist
+records, not a statement that one of them doesn't matter.
+
+**Scope:** Restates, and does not modify, `RFQ-S1`, `RFQ-RT2`,
+`RFQ-EH1`, or `RFQ-EH6`. Resolves only the precedence question between
+the `SENT`/`SEND_FAILED` state transition and its corresponding Event
+History write — the one open implementation-level question identified
+by the RFQ-EH implementation design assessment. Does not touch the
+`DISPATCH_CREATED` or `SUPPLIER_RESPONSE_RECEIVED` pairings, both of
+which remain exactly as `RFQ-EH6` already states them.
+
+**Explicit non-decisions:** stuck-`SENDING` recovery; `SendAttempt`;
+provider idempotency; webhook/delivery/bounce handling; a retention
+policy; a universal `AuditLog`; a broader event-sourcing architecture;
+any recovery/reconciliation mechanism for a missing Event History
+record. None of these is resolved, narrowed, or foreclosed by this
+entry — all remain exactly as recorded in `open.md`.
+
 ### Canonical separation (must be preserved exactly)
 
 ```
@@ -3447,9 +3528,11 @@ Domain-specific actor/source classification ≠ universal Actor/Authority entity
 Retry (same RFQDispatch) ≠ Resend (new RFQDispatch) — unchanged from RFQ-RT1
 Historical outcome recorded ≠ RFQDispatch state transition (UNKNOWN proves this concretely)
 ACCEPTED/FAILED/UNKNOWN (historical) = success/failure/unknown (SendOutcome.kind) — one vocabulary, not two
+Event History write failure ≠ current state rollback (RFQ-EH10)
+Event History being non-authoritative ≠ Event History being optional
 ```
 
-### Non-Goals (explicitly not ratified by RFQ-EH1–RFQ-EH9)
+### Non-Goals (explicitly not ratified by RFQ-EH1–RFQ-EH10)
 
 A universal `AuditLog` entity; Approval/PurchaseOrder audit; ERP audit;
 AI/agent audit; quote/PDF/evidence ingestion; delivery/bounce webhook
@@ -3457,6 +3540,7 @@ audit; a SendGrid Event Webhook implementation; stuck-`SENDING`
 recovery; provider idempotency; a retention policy; a legal/compliance
 retention framework; a cross-domain event bus; a generic event-sourcing
 architecture; Execution Authority; a `SendAttempt` domain entity; any
+missing-Event-History-record recovery/reconciliation mechanism; any
 table, migration, service function, route, UI, or test. Each of these
 may require its own separate future ratification if a concrete trigger
 arises — none is resolved, narrowed, or foreclosed by this family. All
