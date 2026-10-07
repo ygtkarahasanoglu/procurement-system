@@ -2415,6 +2415,226 @@ Accepting a Supplier Response does not mean a procurement decision has
 been approved, and does not itself authorize anything beyond the single,
 narrow act of recording that one response.
 
+## RFQ Resend/Retry Semantics (RFQ-RT1–RFQ-RT5)
+
+**Naming note:** this family uses the grouped prefix `RFQ-RT` (RFQ
+Retry), distinguishing it from the pre-existing `RFQ-S1`/`RFQ-S2` (Send)
+and `RFQ-R1`–`RFQ-R5` (Response) families, and from the bare `R1`–`R12`
+principles in `01-system-principles.md`. None of those is renamed,
+renumbered, or altered by this family's introduction.
+
+Context: `RFQDispatch`, `rfqDispatchService.sendRFQDispatch`, and
+`EmailSender` already exist (`RFQ-S1`/`RFQ-S2`). As of this ratification,
+the implemented SEND claim (`sendRFQDispatch`'s CAS) only ever matches
+`status: "PENDING"` — no code path currently retries a `SEND_FAILED` or
+`SENDING` dispatch, and no resend UI/route exists. Per this repository's
+established Fast Track Protocol (`docs/development/implementation-playbook.md`)
+for RED-adjacent decisions preceding a YELLOW implementation batch, this
+ratifies the semantics in advance of that implementation, following the
+same discipline already used for `RFQ-S1`/`RFQ-S2`.
+
+**Evidence:** Independent, read-only RFQ retry/resend architectural
+assessment (repository-state analysis of `rfqDispatchService.ts`,
+`emailSender.ts`, `rfqEmailComposer.ts`, `rfqResponseToken.ts`,
+`schema.prisma`, and `server.ts`'s RFQ routes, cross-checked against
+`RFQ-S1`, `RFQ-S2`, `RFQ-R1`–`RFQ-R5`, `SEC-009`, `SEC-010`, `R12`, and
+`01-system-principles.md` #1/#2), 2026-10-07.
+
+### RFQ-RT1 — Retry and Resend Are Distinct Concepts
+
+**Statement:** `Retry` and `resend` are separate domain concepts, not
+interchangeable names for one action:
+
+- **Retry** re-attempts the *same* logical RFQDispatch send action. The
+  same `RFQDispatch` identity is preserved. It is available only when the
+  system knows, deterministically, that the previous external send
+  outcome did not succeed.
+- **Resend** begins a *new* outbound communication instance with the
+  supplier. A new `RFQDispatch` identity is used. The prior
+  `RFQDispatch`'s state/history is never modified.
+
+`Replacement` (an explicit superseding relationship between dispatches)
+and `new RFQ` (a new `SourcingEvent`) are further distinct concepts.
+**`New RFQDispatch` ≠ `New SourcingEvent`** — multiple `RFQDispatch`
+records may already exist under one `SourcingEvent` (`R1`); this decision
+does not change that shape.
+
+**Scope:** Restates and does not modify `R1`, `RFQ-S1`, or `RFQ-S2`.
+
+**Explicit non-decisions:** this decision does **not** ratify replacement
+semantics (see `RFQ-RT5` Non-Goals below); does **not** ratify
+post-response requote/revision semantics; and does **not** ratify any
+policy for creating a new `SourcingEvent`. None of these may be inferred
+from `RFQ-RT1`.
+
+### RFQ-RT2 — `SEND_FAILED` Is a Deterministic-Failure Signal, Not Proof of Non-Delivery; `UNKNOWN` Remains `SENDING`
+
+**Statement:** `SEND_FAILED` is the terminal send state used when the
+external sender/provider returns a deterministic failure/non-success
+outcome. `SEND_FAILED` does **not** mean "it is proven the email never
+reached the supplier in any sense" — it means only that a deterministic
+failure outcome was received. It must be kept distinct from an unresolved
+external outcome.
+
+A timeout, a lost connection, an application crash after the external
+call, or any other gap between provider acceptance and the application
+observing a response is an **`UNKNOWN`** outcome, not a `SEND_FAILED`
+one, and must never be reclassified as `SEND_FAILED`. Per the existing
+`RFQ-S1` discipline, such an outcome leaves the dispatch in `SENDING`.
+
+**Scope:** Restates and sharpens, and does not modify, `RFQ-S1`'s own
+"Provider timeout / unknown outcome" clause.
+
+### RFQ-RT3 — Same-Dispatch Retry Is Permitted Only From Deterministic `SEND_FAILED`
+
+**Statement:** A `RFQDispatch` in deterministic `SEND_FAILED` may be
+retried using the same `RFQDispatch` identity. Canonical transitions:
+
+```
+SEND_FAILED → SENDING → SENT
+SEND_FAILED → SENDING → SEND_FAILED
+```
+
+The first-send lifecycle is unchanged:
+
+```
+PENDING → SENDING → SENT
+PENDING → SENDING → SEND_FAILED
+```
+
+Same-dispatch retry semantics apply **only** to deterministic
+`SEND_FAILED`. No other state is retry-eligible under this decision.
+
+### RFQ-RT4 — `SENDING` Is Never Same-Dispatch Retried or Reclaimed
+
+**Statement:** A `RFQDispatch` in `SENDING` must not be reclaimed via
+same-dispatch retry, under any circumstance, within the scope of this
+decision. The following transition is explicitly forbidden, including
+when the only reason is application timeout, crash, or an otherwise
+`UNKNOWN` outcome:
+
+```
+SENDING → SENDING (reclaim/retry) → SENT
+```
+
+`SENDING` is not success, is not failure, is not a reusable terminal
+state, and is not retry-eligible. This decision defines no automatic or
+manual reclaim mechanism for `SENDING`.
+
+**Explicit non-decision:** Stuck-`SENDING` recovery remains a separate,
+future architecture/decision item and stays **OPEN** (see `open.md`).
+This decision establishes only the boundary that same-dispatch
+retry/reclaim of `SENDING` is not safe to treat as ratified until that
+separate recovery semantics is decided.
+
+### RFQ-RT5 — New `RFQDispatch` / Resend Semantics
+
+**Statement:** When a new outbound communication intent is needed, a new
+`RFQDispatch` may be created under the same `SourcingEvent`:
+
+```
+SourcingEvent
+├── RFQDispatch A
+└── RFQDispatch B
+```
+
+`RFQDispatch B` is a new communication instance. The prior dispatch
+(`RFQDispatch A`) is never mutated by this: its status is not changed,
+not reverted, and its identity is unchanged — it remains a historical
+fact exactly as it was. This applies to: a deliberate resend; a
+user-initiated fresh contact attempt while a prior dispatch remains
+unresolved in `SENDING`; and any future independent supplier-contact
+instance need.
+
+**Duplicate-safety boundary (must be preserved exactly):** a new
+`RFQDispatch` is **not duplicate-safe**. If a prior dispatch left in
+`SENDING` was in fact already accepted by the provider, sending a new
+dispatch can result in two emails reaching the supplier. This decision
+does **not** treat that risk as solved:
+
+- a new dispatch does not eliminate external duplicate-send risk;
+- cross-dispatch duplicate suppression is **not** a canonical invariant
+  as of this decision (see Non-Goals below);
+- this decision creates no provider-level exactly-once guarantee.
+
+**Canonical product semantics (non-implementation):**
+
+- `SEND_FAILED`: a future UI/action MAY offer "Retry," using the
+  same-dispatch mechanism ratified by `RFQ-RT3`.
+- `SENDING`: a future UI/action MUST NOT offer same-dispatch retry. If
+  the user deliberately chooses to start new communication, "Resend"
+  creates a new `RFQDispatch` per this decision, and MUST make the
+  duplicate-email risk explicit to the user when the prior dispatch's
+  outcome is unknown.
+- `SENT`: post-`SENT` resend/re-contact policy is **not** ratified by
+  this decision. It remains **OPEN** and must not be conflated with
+  response/requote/revision semantics.
+
+No UI implementation detail is ratified by this decision — only the
+product-level semantic boundary above.
+
+### Non-Goals (explicitly not ratified by RFQ-RT1–RFQ-RT5)
+
+**CAS ≠ external side-effect idempotency.** The existing `RFQDispatch`
+CAS mechanics (`RFQ-S1`'s `PENDING→SENDING` claim, and the `SENDING→`
+terminal-state write) are preserved exactly as already ratified: they
+provide row-level exclusive claiming and prevent a concurrent duplicate
+*claim* on the same dispatch. They do **not** guarantee the external
+email is never sent twice, do **not** resolve the `UNKNOWN` window
+between provider acceptance and the application observing a response,
+and are not reinterpreted as a general idempotency mechanism by this
+decision.
+
+**Cross-dispatch duplicate suppression is not a canonical invariant.**
+Multiple `RFQDispatch` records may already exist for the same
+`SourcingEvent` + `Supplier` pair (no change from the existing schema).
+No canonical invariant yet distinguishes an accidental duplicate from a
+legitimate resend/re-contact. This decision does **not** add a schema
+uniqueness constraint, a service-level global duplicate lock, or
+automatic duplicate rejection. A UI/operational safeguard may be added
+later; it is not ratified here as domain semantics.
+
+**Replacement semantics are deferred, not ratified.** No
+`replacementOfDispatchId` or equivalent canonical replacement relation is
+introduced by this decision. Explicit replacement lineage is not
+required to make `RFQ-RT1`–`RFQ-RT5` correct. It remains **OPEN** /
+future-decision territory, particularly as it relates to an already-
+answered RFQ, quote revision, requote, or superseding an existing
+commercial request.
+
+**`SendAttempt` (or equivalent attempt aggregate) is deferred, not
+ratified.** The current repository and the current `EmailSender`
+contract do not make a canonical per-attempt domain entity necessary.
+The distinction between operational telemetry and canonical domain state
+is preserved: attempt-level detail belongs to application logs unless
+and until a concrete domain trigger (e.g., a ratified provider
+message-id/forensic requirement) reopens the question.
+
+**Provider message ID / idempotency remain future decisions.** This
+decision does not ratify provider integration. Provider message ID,
+provider idempotency key, provider status lookup, delivery confirmation,
+and webhook semantics all remain **OPEN** (see `open.md`). Should
+stuck-`SENDING` recovery or `SENDING` reclaim ever be revisited, it may
+depend on provider-level idempotency and/or provider message
+identity/status capabilities becoming available — but a provider message
+ID alone is not, by itself, defined as a "no duplicate" guarantee;
+provider-side idempotency (deduplication of a logical send by the
+provider itself) is a distinct, separate provider capability, not
+created or assumed by this decision.
+
+### Canonical separation (must be preserved exactly)
+
+```
+Retry ≠ Resend
+Resend ≠ Replacement
+Replacement ≠ New RFQ (New SourcingEvent)
+New RFQDispatch ≠ New SourcingEvent
+CAS ≠ external side-effect idempotency
+SEND_FAILED ≠ proof of non-delivery
+SEND_FAILED ≠ UNKNOWN
+SENDING ≠ retry-eligible terminal state
+```
+
 ## DecisionPackage Semantics & Allocation Boundary (DP-1–DP-3)
 
 **Naming note:** this family establishes a new grouped prefix, `DP-`
@@ -2587,3 +2807,229 @@ reference only; it does not correct, retract, or reinterpret `CT-A2`'s
 text, and does not ratify `SUPERSEDED` as implemented or as a required
 future mechanism.
 
+## RFQ Email Provider Selection (RFQ-EP1–RFQ-EP8)
+
+**Naming note:** this family uses the grouped prefix `RFQ-EP` (RFQ Email
+Provider), distinguishing it from `RFQ-S1`/`RFQ-S2` (Send), `RFQ-R1`–
+`RFQ-R5` (Response), and `RFQ-RT1`–`RFQ-RT5` (Retry/Resend). None of
+those families is renamed, renumbered, or altered by this family's
+introduction. **This is a documentation-only ratification** — no
+provider SDK, credential, environment configuration, schema column,
+webhook endpoint, or recovery job is introduced by any decision in this
+family.
+
+Context: as of this ratification, `EmailSender`
+(`app/src/api/emailSender.ts`) has no real provider implementation —
+`unconfiguredEmailSender` remains the wired default, returning a
+deterministic `failure` outcome. This family ratifies the *provider
+selection decision itself* and the narrow semantic boundaries that
+decision carries, in advance of the adapter implementation, following
+the same Fast Track Protocol discipline already used for `RFQ-S1`/
+`RFQ-S2` and `RFQ-RT1`–`RFQ-RT5`.
+
+**Evidence:** independent, read-only provider-selection architecture
+assessment (candidate comparison of Amazon SES, Brevo, Resend, Postmark,
+and Twilio SendGrid against this repository's own requirements and the
+existing `EmailSender` contract, cross-checked against official provider
+documentation), 2026-10-07.
+
+### RFQ-EP1 — Provider Selection
+
+**Statement:** Twilio SendGrid is the selected real email provider for
+the initial YGT Procurement RFQ outbound email integration. The provider
+remains replaceable: no provider-specific concept introduced by this
+family becomes a canonical Procurement Core domain entity, and
+`EmailSender` (`emailSender.ts`) remains the sole provider boundary.
+Selecting a provider does not modify, narrow, or reinterpret `RFQ-S1`,
+`RFQ-S2`, `RFQ-R1`–`RFQ-R5`, or `RFQ-RT1`–`RFQ-RT5` — all remain exactly
+as previously ratified.
+
+**Scope:** Ratifies only the selection decision and its replaceability
+boundary. Does not ratify an adapter implementation, an SDK dependency,
+credential/environment configuration, or any code change — see the
+family-level Context note above.
+
+**Explicit non-decisions:** whether SendGrid remains the provider
+indefinitely; any future provider-switch decision; any implementation
+detail of the eventual adapter. None of these may be inferred from
+`RFQ-EP1`.
+
+### RFQ-EP2 — EU Regional Deployment Configuration (Architecture-Level Requirement)
+
+**Statement:** The intended deployment configuration for the SendGrid
+integration is, at the architecture level: an EU regional SendGrid
+subuser, the EU API endpoint, an EU dedicated IP, and an authenticated
+sending domain configured for the EU region.
+
+**Scope:** This ratifies a **canonical deployment requirement**, not an
+implementation. It does not add any credential, infrastructure
+provisioning, environment variable, or configuration file to this
+repository. The actual provisioning of an EU subuser/IP/domain is
+implementation work that remains to be done when the adapter is built.
+
+**Explicit non-decisions:** the exact SendGrid account/subuser
+provisioning steps; DNS/domain-authentication implementation; any
+infrastructure-as-code representation. None of these may be inferred
+from `RFQ-EP2`.
+
+### RFQ-EP3 — Data Residency Caveat (Scoped, Non-Absolute)
+
+**Statement:** SendGrid provides an explicit EU regional email
+data-residency **capability** (`RFQ-EP2`). This is **not** an absolute
+guarantee of EU-only data processing or storage. Per SendGrid's own
+official documentation, Event Webhook data is staged in US
+infrastructure regardless of the sending subuser's region. Therefore:
+
+- EU regional sending / data-residency **capability** = available
+  (`RFQ-EP2`).
+- Absolute EU-only processing/storage **guarantee** = **not** established
+  by this decision.
+
+**This decision does NOT establish or imply:** that "GDPR compliant"
+equals "fully EU resident"; that all customer data stays in the EU; that
+webhook data residency is resolved. Webhook data residency/handling
+remains explicitly **OPEN** (see `open.md`) and may require a separate
+future enterprise/legal review. No legal conclusion about GDPR, KVKK, or
+any other data-protection regime's adequacy is drawn or implied by this
+decision — it records only the technical capability/limitation as
+documented by the provider.
+
+**Explicit non-decisions:** any broader enterprise/legal data-residency
+policy for YGT generally (remains OPEN, see `open.md`); webhook data
+handling/residency once webhooks are eventually built; any data
+processing agreement or contractual commitment. None of these may be
+inferred from `RFQ-EP3`.
+
+### RFQ-EP4 — Provider Message ID as Opaque Correlation Primitive
+
+**Statement:** The provider message ID is an opaque external correlation
+identifier. It:
+
+- is not Procurement Core authority;
+- is not a lifecycle state;
+- is not interpreted by domain logic;
+- is not equivalent to delivery confirmation;
+- is not equivalent to an idempotency key (see `RFQ-EP6`);
+- may be persisted for correlation/recovery/forensic purposes.
+
+**Scope:** Ratifies only that capturing an opaque provider message ID as
+a correlation primitive is in scope for this milestone family. Does
+**not** ratify: a `SendAttempt` (or equivalent per-attempt) domain
+entity; a generic audit/evidence model; a delivery-status domain model.
+`RFQ-RT5`'s existing Non-Goals (`SendAttempt` deferred, provider message
+ID/idempotency remain future decisions) are unaffected and unchanged.
+
+**Explicit non-decisions:** the exact field name, schema representation,
+or persistence mechanism for the provider message ID; whether it is
+added to `RFQDispatch` now or later; any audit model it might eventually
+feed into. None of these may be inferred from `RFQ-EP4` — remain OPEN
+(see `open.md`).
+
+### RFQ-EP5 — Send Semantics Reaffirmed Under a Real Provider
+
+**Statement:** `EmailSender.send()`'s three outcomes retain exactly
+their `RFQ-S1`/`RFQ-RT2` meaning, now that a real provider is named:
+
+- `success` = the provider accepted/successfully accepted the send
+  request. It does **not** mean the recipient received, inboxed, read,
+  or was ever actually delivered the message.
+- `failure` = a deterministic provider/non-success signal.
+- `unknown` = the application cannot establish the external outcome.
+
+The existing RFQ state mapping is unchanged:
+
+```
+PENDING → SENDING → SENT
+PENDING → SENDING → SEND_FAILED
+```
+
+`unknown` keeps the dispatch in `SENDING` (`RFQ-S1`, `RFQ-RT2`). **No
+SendGrid-specific status or error vocabulary enters
+`RFQDispatch.status`** — every provider-specific response is translated
+into exactly one of `success`/`failure`/`unknown` inside the adapter,
+never surfaced further.
+
+**Scope:** Restates, and does not modify, `RFQ-S1`, `RFQ-S2`, `RFQ-RT2`,
+or `RFQ-RT3`. `SENT` continues to mean "the provider accepted the
+message," never "delivered" — this decision makes that reading explicit
+specifically against SendGrid's own documented behavior (`202 Accepted`
+on success), closing the ambiguity the prior provider-contract assessment
+flagged.
+
+### RFQ-EP6 — Idempotency Non-Ratification
+
+**Statement:** This decision does **not** ratify any provider-level
+exactly-once guarantee. Specifically preserved:
+
+- application-level CAS (`RFQ-S1`) ≠ provider idempotency;
+- provider message ID (`RFQ-EP4`) ≠ an idempotency key;
+- successful provider acceptance does **not** imply an application-side
+  exactly-once external side effect;
+- same-dispatch `SENDING` reclaim remains unsafe (`RFQ-RT4`) until a
+  separate recovery decision establishes sufficient evidence/capability.
+
+SendGrid's own idempotency-related capability, if any, is **not**
+assumed by this decision and must not be relied upon unless and until it
+is separately verified and integrated by its own future decision.
+
+**Explicit non-decisions:** whether SendGrid offers a usable idempotency
+mechanism; whether/how one would ever be integrated. Both remain OPEN
+(see `open.md`).
+
+### RFQ-EP7 — Webhook/Delivery Deferral
+
+**Statement:** The following remain explicitly OPEN/future and are
+**not** implemented, designed, or ratified by this family: delivery
+webhook ingestion; bounce webhook ingestion; complaint events; webhook
+authenticity/inbound trust; event deduplication; a delivery-status
+projection; webhook data residency/handling.
+
+**No delivery state machine is introduced now.** `SENT` remains the send
+lifecycle's acceptance state (`RFQ-EP5`). Any future `Delivered`/
+`Bounced` (or equivalent) representation must be ratified as an
+**additive** decision layered on top of the existing `RFQDispatch`
+lifecycle, never as a reinterpretation or silent rewrite of `SENT`'s
+existing, narrow meaning.
+
+### RFQ-EP8 — Stuck-`SENDING` Boundary Reaffirmed
+
+**Statement:** Selecting a real provider does **not**, by itself,
+authorize any of the following, whether justified by timeout, elapsed
+time, or human confidence alone:
+
+```
+SENDING → SENT        (reclaim)
+SENDING → SEND_FAILED (reclaim)
+SENDING → retry
+```
+
+`RFQ-RT4`'s existing boundary — same-dispatch `SENDING` is never
+reclaimed or retried, under any circumstance, within the scope of that
+decision — is unchanged and fully preserved. Any future stuck-`SENDING`
+recovery mechanism requires its own, separate architecture/decision
+assessment, informed by whatever real evidence/capability (e.g., a
+provider status-lookup API) that future assessment can actually verify —
+not inferred from provider selection alone.
+
+### Canonical separation (must be preserved exactly)
+
+```
+Provider selection ≠ Procurement Core domain semantics
+SENT ≠ delivered
+Provider message ID ≠ idempotency key
+Provider message ID ≠ Procurement Core authority
+EU regional sending capability ≠ absolute EU-only data processing
+Webhook/delivery confirmation ≠ ratified by this family
+SendAttempt ≠ ratified by this family
+Stuck-SENDING recovery ≠ ratified by this family
+```
+
+### Non-Goals (explicitly not ratified by RFQ-EP1–RFQ-EP8)
+
+A `SendAttempt` (or equivalent per-attempt) domain entity; a generic
+audit/evidence model; a delivery-status domain model; provider-level
+idempotency guarantees; stuck-`SENDING` recovery; delivery/bounce
+webhook ingestion; webhook authenticity/trust mechanism; webhook data
+residency/handling; any broader enterprise/legal data-residency policy
+for YGT; any provider SDK, credential, environment configuration, or
+adapter implementation. All remain exactly as recorded in `open.md`.

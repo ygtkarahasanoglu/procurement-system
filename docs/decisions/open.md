@@ -88,21 +88,75 @@ event should be treated as an error and corrected, not built upon.
   response-token lifetime is an implementation-only default
   (`app/src/services/rfqDispatchService.ts`), not a ratified business
   policy; the actual required response window remains OPEN.
-- **RFQ resend/retry policy** — whether an RFQDispatch already `SENT`,
-  `SEND_FAILED`, or `RESPONDED` may be sent/resent again, and under what
-  conditions.
+- **RFQ resend/retry policy** — `RFQ-RT1`–`RFQ-RT5` (`docs/decisions/ratified.md`)
+  now RATIFY the core semantics: retry and resend are distinct concepts;
+  a deterministic `SEND_FAILED` dispatch may be retried using the same
+  `RFQDispatch` identity; a `SENDING` dispatch may never be same-dispatch
+  retried/reclaimed; and a new, independent `RFQDispatch` may always be
+  created under the same `SourcingEvent` for a fresh communication
+  intent, leaving any prior dispatch's state/history unchanged (not
+  duplicate-safe). Still OPEN and NOT resolved by `RFQ-RT1`–`RFQ-RT5`:
+  whether/how an already-`SENT` or `RESPONDED` dispatch may be
+  resent/re-contacted; and any replacement/lineage relation between
+  dispatches (see the new bullet immediately below).
+- **RFQDispatch replacement lineage / `SendAttempt` domain primitive** —
+  `RFQ-RT5`'s Non-Goals (`docs/decisions/ratified.md`) ratify only that
+  neither an explicit replacement relation (e.g. `replacementOfDispatchId`)
+  nor a `SendAttempt`/per-attempt domain aggregate is introduced now. Both
+  remain available for future ratification if a concrete trigger arises
+  (e.g., quote revision/requote policy needing to distinguish superseding
+  an already-answered RFQ from retrying an unanswered one; or provider
+  message ID adoption making per-attempt tracking a real domain need).
+  Not resolved by `RFQ-RT1`–`RFQ-RT5`.
 - **Stuck-`SENDING` recovery** — how an RFQDispatch left in `SENDING`
   (e.g., after a provider timeout or a process crash mid-attempt) is
   eventually resolved to a terminal outcome (see `ratified.md`, `RFQ-S1`).
+  `RFQ-RT4` (`docs/decisions/ratified.md`) additionally ratifies only that
+  same-dispatch retry/reclaim of `SENDING` is not safe to treat as
+  resolved until this separate recovery mechanism is decided — it does
+  not itself define that mechanism. `RFQ-EP8` (`docs/decisions/
+  ratified.md`) further ratifies only that real provider selection
+  (Twilio SendGrid) does not, by itself, authorize `SENDING → SENT`,
+  `SENDING → SEND_FAILED`, or `SENDING → retry` based on timeout, elapsed
+  time, or human confidence alone — it likewise does not define the
+  eventual recovery mechanism.
 - **Provider timeout / unknown outcome handling** — the eventual recovery
   mechanism for a SEND attempt whose outcome could not be determined (see
   `ratified.md`, `RFQ-S1`); `RFQ-S1` ratifies only that such an attempt
   remains `SENDING`, not how it is later resolved.
-- **Provider message ID / delivery confirmation** — whether and how
-  provider-level transmission evidence (e.g., a message id, delivery/
-  bounce status) is captured.
-- **Email provider selection** — which outbound email provider/service is
-  used, and the associated trust/data-residency implications.
+- **Provider message ID / delivery confirmation** — the *existence* of an
+  opaque provider message ID as a correlation primitive is now RATIFIED
+  (see `ratified.md`, `RFQ-EP4`). Still OPEN: its exact field name/schema
+  representation; whether/when it is added to `RFQDispatch`; delivery
+  confirmation; bounce status capture; and any audit/forensic model it
+  might eventually feed into.
+- **Email provider selection** — **RESOLVED.** Twilio SendGrid is the
+  selected real email provider for the initial RFQ outbound email
+  integration, with an EU regional deployment configuration (EU subuser,
+  EU API endpoint, EU dedicated IP, EU-region authenticated sending
+  domain) ratified as a canonical deployment requirement (see
+  `ratified.md`, `RFQ-EP1`, `RFQ-EP2`). The associated data-residency
+  scope is narrowly ratified and explicitly non-absolute (see
+  `ratified.md`, `RFQ-EP3`) — a broader enterprise/legal data-residency
+  policy for YGT generally is a separate, still-open item (below). This
+  is a documentation-only ratification: no provider SDK, credential,
+  environment configuration, or adapter implementation exists in this
+  repository as a result of it.
+- **Provider idempotency key usage** — whether SendGrid offers a usable
+  idempotency mechanism, and whether/how one would ever be verified and
+  integrated, is explicitly NOT assumed or ratified (see `ratified.md`,
+  `RFQ-EP6`). Provider message ID (`RFQ-EP4`) is explicitly not
+  equivalent to an idempotency key.
+- **Webhook authenticity / inbound trust, and webhook data
+  residency/handling** — delivery webhook, bounce webhook, and
+  complaint-event ingestion; how an inbound webhook's authenticity would
+  be verified; and where/how webhook event data is processed and stored,
+  including the US-staging caveat recorded at `RFQ-EP3`. None of these
+  are resolved by `RFQ-EP1`–`RFQ-EP8` (see `ratified.md`, `RFQ-EP7`).
+- **Enterprise/legal data residency policy for YGT (general)** — whether
+  YGT requires a stronger, absolute data-residency guarantee than the
+  capability-level configuration ratified at `RFQ-EP2`/`RFQ-EP3`; this is
+  a business/legal decision, not resolved by this family.
 - **Quote resubmission/requote/versioning** — whether a supplier may
   submit more than one response/quote version for the same RFQDispatch or
   SourcingEvent (cross-referenced from the existing `QuoteVersion`
