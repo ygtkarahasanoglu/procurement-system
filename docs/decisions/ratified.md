@@ -218,6 +218,117 @@ collapses Tenant Binding into either, or assumes a shared audit
 representation without explicit ratification is **inconsistent with U3** as
 ratified.
 
+### B2-EA1 — Execution Authority: Minimal Semantic Contract
+
+**Naming note:** this extends `B2` directly (the existing decision that
+Execution Authority is separate from Approval) with its own citable ID,
+mirroring the `APO-D1`/`APO-D2` and `CR-D2` sibling-extension precedent
+— `B2` itself is not renamed, renumbered, or reworded. **This is a
+documentation-only ratification.** No application code, Prisma schema,
+migration, test, route, UI, CI, or configuration change is introduced
+by this entry, and none of `M2`, `B2`, `C`, `U3`, `APO-D1`, `APO-D2`,
+`CR-A`, `CR-B.1`, `CR-B.2`, `CR-D2`, `RFQ-S1`, `RFQ-S2`, `RFQ-R1`, or
+`RFQ-PD1`–`RFQ-PD20` is reopened, reinterpreted, or altered by it.
+
+**Evidence:** an independent, read-only semantic assessment deriving
+this contract strictly from the already-ratified material listed above
+(no new concept invented beyond naming/consolidating relationships
+that already exist implicitly in that material), reviewed and accepted
+for ratification, 2026-10-07.
+
+**Statement:** Execution Authority is the normative permission for
+Procurement Core to initiate a specific external side effect, evaluated
+independently, at the moment that initiation is about to occur.
+
+**Mandatory non-equivalences (restated, not newly invented — each
+already follows from the cited decision):**
+
+```
+Execution Authority ≠ Approval                                    (B2, CR-B.2)
+Execution Authority ≠ Capability                                  (U3 guardrail 5)
+Execution Authority ≠ Authentication                              (C)
+Execution Authority ≠ Tenant Binding                               (U3 guardrail 4)
+Execution Authority ≠ Supplier identity / representative authority (RFQ-ATT1, RFQ-R1)
+Execution Authority ≠ commercial validity                         (CR-A, CR-B.1, CR-B.2)
+Execution Authority ≠ execution outcome/evidence                  (RFQ-S1, RFQ-RT2, RFQ-PD20)
+```
+
+**Relationship to Approval:** Approval remains necessary for
+PurchaseOrder creation under `APO-D1`/`APO-D2`, exactly as already
+ratified. Approval alone does not grant, and never has granted,
+Execution Authority — `B2` already states this unconditionally, and
+`CR-B.2` already records that "whether Approval is Execution Authority"
+was explicitly never established. This entry adds no new constraint on
+either `APO-D1` or `APO-D2`.
+
+**Relationship to Capability:** Capability and Execution Authority
+remain orthogonal, per `U3` guardrail 5, without exception. Technical
+ability or credentials to perform an action (e.g., a configured
+`EmailSender`) never by themselves authorize that action's initiation.
+
+**Relationship to `U3` — shared concept, domain-specific
+implementation:** Execution Authority is a shared semantic concept
+(the question "is this specific action, right now, normatively
+permitted to actually happen") with strictly domain-specific
+implementation, exactly as `U3` already requires. The shared concept
+must **not** become, now or in any future domain:
+
+- a canonical Authority entity/table;
+- a universal `authorize()` API;
+- a generic policy engine;
+- a universal RBAC mechanism;
+- a shared audit/event representation;
+- a mechanism that collapses Authority, Capability, Authentication, or
+  Tenant Binding into one another.
+
+**`RFQ-S2` cross-reference (example only, not a new mechanism):**
+`RFQ-S2`'s existing role check (`assertActorAuthorized`, evaluated
+immediately before the RFQ-send external side effect) is recognized as
+the first existing, concrete, domain-specific implementation of this
+shared concept. This is a clarifying cross-reference to already-
+ratified, already-implemented behavior — `RFQ-S2` itself is unchanged,
+remains scoped to the RFQ-send domain only, and must never be read as a
+reusable or generalized mechanism for any other domain.
+
+**Execution lifecycle, distinct from Execution Authority itself:** the
+following are semantically distinct, and only the second belongs to
+Execution Authority:
+
+1. preparation / eligibility
+2. **authorization** — the one moment Execution Authority governs
+3. technical capability
+4. execution attempt
+5. execution outcome
+6. confirmation/evidence
+7. failure
+8. `UNKNOWN` outcome
+
+Items 1, 3–8 are execution-lifecycle/outcome facts (already proven
+distinct by `RFQ-S1`/`RFQ-RT2`/`RFQ-PD1`–`RFQ-PD20`'s own existing
+state/evidence model) — none of them retroactively creates, proves, or
+substitutes for the authorization decision in item 2.
+
+**Ratified security invariant:**
+
+> No external side effect may be initiated unless a domain-specific
+> Execution Authority check, evaluated independently at the moment of
+> initiation, affirmatively holds.
+
+This check is never satisfied merely by: Approval; Authentication;
+Tenant Binding; Capability; token possession; a supplier response;
+provider delivery evidence; or AI output/confidence.
+
+**Non-Goals (explicitly not ratified by `B2-EA1`):** No PurchaseOrder
+transmission mechanism is defined. No ERP execution/write mechanism is
+defined. No AI-triggered execution mechanism is defined. No generic or
+concrete Execution Authority implementation is defined for any domain.
+No RBAC expansion is authorized. No supplier portal/authentication is
+authorized. No new Authority entity, model, or table is authorized.
+`D7` ("PurchaseOrder transmission/execution authority") remains exactly
+`OPEN`, unresolved and un-narrowed by this entry — it still requires
+its own separate, future, concrete decision whenever a real consumer
+(PO transmission, ERP write, or AI-triggered action) actually exists.
+
 ## D5-R1 — Cancellation Reversibility (Root) — NOT-REVERSIBLE / PERMANENT
 
 **Ratified in D-5.14.** Full source analysis: D-5 through D-5.13 in
