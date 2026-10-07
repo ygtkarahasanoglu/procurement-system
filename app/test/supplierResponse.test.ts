@@ -271,6 +271,86 @@ describe("submitSupplierResponse (service)", () => {
   // transaction-scoped Prisma client, neither of which is this repo's
   // existing convention).
   // ---------------------------------------------------------------
+
+  // ---------------------------------------------------------------
+  // RFQ-EH10 test hardening: unlike "H." directly above, a genuine,
+  // real-Postgres fault-injection point DOES exist for the
+  // SUPPLIER_RESPONSE_RECEIVED event-insert step specifically — a
+  // temporary trigger on RFQCommunicationEvent, scoped to exactly one
+  // dispatch id, created and dropped entirely within this one test.
+  // This touches no production code, no migration file, and mocks
+  // nothing: the RFQ-R4 transaction genuinely rolls back in real
+  // Postgres, exactly as it would for any other mid-transaction
+  // failure. Proves: token consumption + QuoteVersion/SupplierQuote
+  // creation + the SUPPLIER_RESPONSE_RECEIVED event are one atomic
+  // unit, and the event itself being non-authoritative (RFQ-EH1) does
+  // not mean its own failure is ignored — within THIS transaction, it
+  // is still a full participant.
+  // ---------------------------------------------------------------
+  it("SUPPLIER_RESPONSE_RECEIVED event insertion failure rolls back the ENTIRE RFQ-R4 transaction, and the token remains usable afterward", async () => {
+    const { dispatch, rawToken } = await freshTokenDispatch();
+    // Server-generated UUID only, never request input — safe to embed
+    // in the trigger-scoping SQL below; asserted defensively anyway.
+    expect(dispatch.id).toMatch(/^[0-9a-f-]{36}$/);
+
+    const quoteVersionCountBefore = await prisma.quoteVersion.count();
+    const supplierQuoteCountBefore = await prisma.supplierQuote.count();
+
+    await prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION pg_temp_fail_rfq_event_for_dispatch() RETURNS TRIGGER AS $$
+      BEGIN
+        IF NEW."rfqDispatchId" = TG_ARGV[0] AND NEW."eventType" = 'SUPPLIER_RESPONSE_RECEIVED' THEN
+          RAISE EXCEPTION 'simulated SUPPLIER_RESPONSE_RECEIVED event insertion failure (test only)';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER test_fail_supplier_response_event
+      BEFORE INSERT ON "RFQCommunicationEvent"
+      FOR EACH ROW EXECUTE FUNCTION pg_temp_fail_rfq_event_for_dispatch('${dispatch.id}');
+    `);
+
+    try {
+      // 3. submitSupplierResponse genuinely fails.
+      await expect(rfqDispatchService.submitSupplierResponse(rawToken, validPayload)).rejects.toThrow();
+
+      // 4. The entire transaction rolled back — nothing partially committed.
+      const dispatchRow = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(dispatchRow.respondedAt).toBeNull(); // token not consumed
+
+      expect(await prisma.quoteVersion.count()).toBe(quoteVersionCountBefore); // no new QuoteVersion
+      expect(await prisma.supplierQuote.count()).toBe(supplierQuoteCountBefore); // no new SupplierQuote
+
+      // No SUPPLIER_RESPONSE_RECEIVED event either — only the
+      // pre-existing DISPATCH_CREATED event (from createRFQDispatch,
+      // inside freshTokenDispatch) remains.
+      const events = await prisma.rFQCommunicationEvent.findMany({ where: { rfqDispatchId: dispatch.id } });
+      expect(events).toHaveLength(1);
+      expect(events[0].eventType).toBe("DISPATCH_CREATED");
+    } finally {
+      // Clean, scoped reversal — no permanent change to the schema or
+      // to global DB behavior beyond this single test's lifetime.
+      await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS test_fail_supplier_response_event ON "RFQCommunicationEvent";`);
+      await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS pg_temp_fail_rfq_event_for_dispatch();`);
+    }
+
+    // 5. With the trigger removed, the SAME token is still fully
+    // usable — rollback genuinely un-consumed it, exactly like the
+    // existing "E/F." reusable-token cases elsewhere in this file. No
+    // new recovery mechanism is implied by this — the token was simply
+    // never consumed in the first place, per RFQ-R3's own existing
+    // atomic-consumption semantics, unchanged by this test.
+    const result = await rfqDispatchService.submitSupplierResponse(rawToken, validPayload);
+    expect(result.rfqDispatchId).toBe(dispatch.id);
+    expect(result.versions).toHaveLength(1);
+
+    const finalEvents = await prisma.rFQCommunicationEvent.findMany({
+      where: { rfqDispatchId: dispatch.id, eventType: "SUPPLIER_RESPONSE_RECEIVED" },
+    });
+    expect(finalEvents).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------

@@ -37,6 +37,7 @@ model Tenant {
   decisionPackages DecisionPackage[]
   approvals        Approval[]
   purchaseOrders   PurchaseOrder[]
+  rfqCommunicationEvents RFQCommunicationEvent[]
 }
 
 // Minimum actor representation. Role is a plain string for V1 — see
@@ -210,10 +211,64 @@ model RFQDispatch {
   providerMessageId String?
 
   supplierQuotes SupplierQuote[]
+  communicationEvents RFQCommunicationEvent[]
 
   @@index([tenantId])
   @@index([sourcingEventId])
   @@index([supplierId])
+}
+
+// RFQ-EH1–RFQ-EH10 (docs/decisions/ratified.md): a tenant-scoped,
+// append-only historical record of the RFQ communication/supplier-
+// response lifecycle. Explicitly NOT the authoritative current state
+// (RFQDispatch remains that, unchanged), NOT Execution Authority, NOT
+// Approval, NOT a universal cross-domain AuditLog, and NOT an
+// evidence/quote/PDF ingestion repository (RFQ-EH1). Normal application
+// flow never updates or deletes a row here (RFQ-EH6).
+//
+// eventType is a closed set: DISPATCH_CREATED | SEND_ATTEMPT_RESULT |
+// SUPPLIER_RESPONSE_RECEIVED (RFQ-EH2) — no other value is ever written.
+// outcome is a closed set, used only on SEND_ATTEMPT_RESULT: ACCEPTED |
+// FAILED | UNKNOWN — the fixed historical representation of
+// SendOutcome.kind's success/failure/unknown (RFQ-EH2's canonical
+// vocabulary amendment), never a RFQDispatch.status value.
+// actorSource is a closed set: INTERNAL_USER | SYSTEM | SUPPLIER |
+// PROVIDER — a domain-specific classification for this event type
+// only, never a universal Actor/Authority entity (RFQ-EH8); actorUserId
+// is populated only when actorSource = INTERNAL_USER.
+// providerMessageId is the same opaque correlation primitive as
+// RFQDispatch.providerMessageId (RFQ-EP4/RFQ-EH5) — never delivery
+// proof, never an idempotency key — and is only ever set alongside
+// outcome = ACCEPTED.
+// quoteVersionId references (never copies) the QuoteVersion a
+// SUPPLIER_RESPONSE_RECEIVED event produced (RFQ-EH2 item 3/RFQ-EH4).
+//
+// Deliberately excluded from this model, under any circumstance
+// (RFQ-EH4): the raw RFQ email body, the response token in any form,
+// any API key/Authorization header/secret, the raw provider response
+// body, another tenant's data, or the supplier's submitted commercial
+// content (that remains QuoteVersion's own, immutable home).
+//
+// No uniqueness constraint on (rfqDispatchId, eventType): SEND_ATTEMPT_RESULT
+// legitimately recurs per dispatch across retries (RFQ-RT1/RFQ-RT3) —
+// a naive unique constraint there would be incorrect, not merely unnecessary.
+model RFQCommunicationEvent {
+  id                String      @id @default(uuid())
+  tenantId          String
+  tenant            Tenant      @relation(fields: [tenantId], references: [id])
+  rfqDispatchId     String
+  rfqDispatch       RFQDispatch @relation(fields: [rfqDispatchId], references: [id])
+  eventType         String // DISPATCH_CREATED | SEND_ATTEMPT_RESULT | SUPPLIER_RESPONSE_RECEIVED
+  occurredAt        DateTime    @default(now())
+  actorSource       String // INTERNAL_USER | SYSTEM | SUPPLIER | PROVIDER
+  actorUserId       String?
+  outcome           String? // ACCEPTED | FAILED | UNKNOWN — SEND_ATTEMPT_RESULT only
+  providerMessageId String?
+  quoteVersionId    String?
+  quoteVersion      QuoteVersion? @relation(fields: [quoteVersionId], references: [id])
+
+  @@index([tenantId])
+  @@index([rfqDispatchId])
 }
 
 // A quote "header" from one supplier for one SourcingEvent. The
@@ -262,6 +317,7 @@ model QuoteVersion {
 
   recommendations  RecommendationRecord[]
   decisionPackages DecisionPackage[]
+  communicationEvents RFQCommunicationEvent[]
 
   @@unique([supplierQuoteId, versionNumber])
   @@index([tenantId])

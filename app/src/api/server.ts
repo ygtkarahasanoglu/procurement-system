@@ -241,6 +241,21 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
     )
   );
 
+  // RFQ-EH7 (docs/decisions/ratified.md): identical authorization shape
+  // to the workflow route immediately above — authenticated,
+  // tenant-bound via assertTenantMatches, no new role/permission
+  // taxonomy. Deliberately a separate route, not folded into
+  // /workflow, per queryService.listRfqCommunicationEvents's own
+  // comment. Never reachable from the unauthenticated, token-scoped
+  // supplier response routes below — those take no req.principal at
+  // all.
+  app.get(
+    "/rfq-dispatches/:id/events",
+    wrap((req) =>
+      queryService.listRfqCommunicationEvents(assertTenantMatches(req.principal!, req.query.tenantId as string), req.params.id)
+    )
+  );
+
   // Tenant-scoped reference-data creation. Exposes creation of the
   // existing flat Product/Supplier records only — no identity/master-data
   // subsystem (PI-C1-PI-C11, R3 remain untouched). tenantId is verified

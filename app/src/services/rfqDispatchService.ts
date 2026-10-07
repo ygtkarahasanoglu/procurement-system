@@ -5,6 +5,11 @@ import { requireId, requireNonEmptyString, requirePositiveDecimal, requireUnit, 
 import { generateRawToken, hashToken } from "../api/rfqResponseToken";
 import type { EmailSender } from "../api/emailSender";
 import { composeRfqEmail, buildResponseUrl } from "./rfqEmailComposer";
+import {
+  recordDispatchCreatedEvent,
+  recordSendAttemptResultEvent,
+  recordSupplierResponseReceivedEvent,
+} from "./rfqEventHistoryService";
 
 // RFQ response lifetime — an IMPLEMENTATION-ONLY DEFAULT, not a ratified
 // business policy. Unlike session.ts's SESSION_LIFETIME_MS (traceable to
@@ -64,8 +69,29 @@ export async function createRFQDispatch(tenantId: string, sourcingEventId: strin
     throw new NotFoundError("Supplier", validSupplierId);
   }
 
-  return db.rFQDispatch.create({
-    data: { tenantId: validTenantId, sourcingEventId: validSourcingEventId, supplierId: validSupplierId },
+  // RFQ-EH2/RFQ-EH6/RFQ-EH10: DISPATCH_CREATED and its corresponding
+  // history event are both purely local operations, so they share one
+  // transaction — a failure recording the event aborts the whole
+  // creation, leaving no partial RFQDispatch behind. This is the
+  // correct-and-safe direction specifically because nothing externally
+  // irreversible has happened yet at creation time (contrast with
+  // performRFQDispatchSendAttempt's SEND_ATTEMPT_RESULT recording
+  // below, which must NOT behave this way, per RFQ-EH10).
+  //
+  // actorSource is SYSTEM, not INTERNAL_USER: this function has never
+  // accepted an actor id (no authorization gate exists here either,
+  // deliberately — see the function's own existing comment above), so
+  // there is no authenticated actor in hand to attribute this event to.
+  return db.$transaction(async (tx) => {
+    const dispatch = await tx.rFQDispatch.create({
+      data: { tenantId: validTenantId, sourcingEventId: validSourcingEventId, supplierId: validSupplierId },
+    });
+    await recordDispatchCreatedEvent(tx, {
+      tenantId: validTenantId,
+      rfqDispatchId: dispatch.id,
+      actorSource: "SYSTEM",
+    });
+    return dispatch;
   });
 }
 
@@ -272,6 +298,19 @@ async function performRFQDispatchSendAttempt(
     // remains SENDING. providerMessageId is never persisted here: it is
     // only ever recorded alongside an explicit SUCCESS outcome, never
     // invented or inferred for an outcome this system does not yet know.
+    //
+    // RFQ-EH6/RFQ-EH10: the UNKNOWN history event is still a mandatory
+    // recording attempt, made via its own separate local operation —
+    // never paired with a state write (none occurs here), and never
+    // able to affect RFQDispatch.status either way (recordSendAttemptResultEvent
+    // never throws; its own internal failure is logged there, not here —
+    // this file keeps its own pre-existing "never logs" invariant).
+    await recordSendAttemptResultEvent(db, {
+      tenantId: validTenantId,
+      rfqDispatchId: validRfqDispatchId,
+      actorUserId: validActorUserId,
+      outcome: "UNKNOWN",
+    });
     return { status: "SENDING" as const };
   }
 
@@ -293,6 +332,20 @@ async function performRFQDispatchSendAttempt(
       `Internal inconsistency: RFQDispatch ${validRfqDispatchId} was not in SENDING when recording its final SEND outcome.`
     );
   }
+
+  // RFQ-EH10: the authoritative state transition above has already
+  // committed by this point — this history-event recording attempt is
+  // mandatory, but its own success or failure never feeds back into, or
+  // reverses, that already-committed state. recordSendAttemptResultEvent
+  // never throws, so this call can never cause this function to report
+  // the provider outcome as anything other than what it actually was.
+  await recordSendAttemptResultEvent(db, {
+    tenantId: validTenantId,
+    rfqDispatchId: validRfqDispatchId,
+    actorUserId: validActorUserId,
+    outcome: outcome.kind === "success" ? "ACCEPTED" : "FAILED",
+    providerMessageId: outcome.kind === "success" ? outcome.providerMessageId ?? null : null,
+  });
 
   return { status: finalStatus };
 }
@@ -496,7 +549,7 @@ export async function submitSupplierResponse(rawToken: string, payload: unknown)
     // from the request body. rfqDispatchId traces this response back to
     // the dispatch that solicited it (the existing, already-nullable
     // SupplierQuote.rfqDispatchId field from Batch 1).
-    return tx.supplierQuote.create({
+    const supplierQuote = await tx.supplierQuote.create({
       data: {
         tenantId: dispatch.tenantId,
         sourcingEventId: dispatch.sourcingEventId,
@@ -516,5 +569,20 @@ export async function submitSupplierResponse(rawToken: string, payload: unknown)
       },
       include: { versions: true },
     });
+
+    // RFQ-EH2 item 3/RFQ-EH10 point 10: unchanged same-transaction
+    // pairing with the existing RFQ-R4 transaction above — nothing
+    // externally irreversible happens in this flow, so a failure here
+    // correctly aborts the whole submission (the supplier may resubmit
+    // within the token's remaining validity window). References the
+    // created QuoteVersion's own id; never copies the supplier's
+    // submitted commercial content into the event itself.
+    await recordSupplierResponseReceivedEvent(tx, {
+      tenantId: dispatch.tenantId,
+      rfqDispatchId: dispatch.id,
+      quoteVersionId: supplierQuote.versions[0].id,
+    });
+
+    return supplierQuote;
   });
 }

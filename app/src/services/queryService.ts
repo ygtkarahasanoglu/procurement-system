@@ -122,3 +122,50 @@ export async function getRequestLineWorkflow(tenantId: string, requestLineId: st
 
   return { requestLine, sourcingEvent: activeSourcingEvent, quoteVersions, recommendations, decisionPackages, rfqDispatches };
 }
+
+// RFQ-EH7 (docs/decisions/ratified.md): a narrow, dedicated read path
+// for RFQ Event History — deliberately separate from
+// getRequestLineWorkflow above rather than folded into it, since
+// forensic history is not needed on every workflow-page load the way
+// the operational dispatch list already is. Reuses the exact same
+// authorization boundary already proven on that function and on its
+// own route (GET /request-lines/:id/workflow): authenticated,
+// tenant-bound, via assertTenantMatches at the route layer — no new
+// role/permission taxonomy, consistent with RFQ-EH7's own explicit
+// floor.
+//
+// Explicit `select` (not `include`), mirroring the exact same
+// discipline already used for the rfqDispatches read above — only the
+// RFQ-EH2/RFQ-EH4/RFQ-EH5/RFQ-EH8 fields are ever returned; a future
+// schema change to this table cannot silently widen this response.
+export async function listRfqCommunicationEvents(tenantId: string, rfqDispatchId: string) {
+  const validTenantId = requireId(tenantId, "tenantId");
+  const validRfqDispatchId = requireId(rfqDispatchId, "rfqDispatchId");
+  const db = tenantScoped(validTenantId);
+
+  // Existence + tenant check, same shape as every sibling lookup in
+  // this file — a cross-tenant or nonexistent dispatch id is rejected
+  // identically (NotFoundError), never distinguished.
+  const dispatch = await db.rFQDispatch.findFirst({
+    where: { id: validRfqDispatchId, tenantId: validTenantId },
+    select: { id: true },
+  });
+  if (!dispatch) {
+    throw new NotFoundError("RFQDispatch", validRfqDispatchId);
+  }
+
+  return db.rFQCommunicationEvent.findMany({
+    where: { tenantId: validTenantId, rfqDispatchId: validRfqDispatchId },
+    select: {
+      id: true,
+      eventType: true,
+      occurredAt: true,
+      actorSource: true,
+      actorUserId: true,
+      outcome: true,
+      providerMessageId: true,
+      quoteVersionId: true,
+    },
+    orderBy: { occurredAt: "asc" },
+  });
+}

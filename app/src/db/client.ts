@@ -60,6 +60,7 @@ const TENANT_SCOPED_MODELS = new Set([
   "DecisionPackage",
   "Approval",
   "PurchaseOrder",
+  "RFQCommunicationEvent",
 ]);
 
 /** Thrown when a caller fails to supply a tenant context to `tenantScoped()` at all. */
