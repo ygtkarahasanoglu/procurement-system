@@ -26,8 +26,22 @@ async function resetDatabase() {
     prisma.approval.deleteMany(),
     prisma.decisionPackage.deleteMany(),
     prisma.recommendationRecord.deleteMany(),
+    // RFQCommunicationEvent references RFQDispatch (required) and
+    // QuoteVersion (nullable) — must be deleted before both.
+    // RFQProviderDeliveryEvent references RFQDispatch (nullable) — must
+    // be deleted before it too. Neither existed when this reset helper
+    // was first written; other test files that create RFQDispatch rows
+    // (rfqSend.test.ts, rfqEventHistory.test.ts, supplierResponse.test.ts,
+    // rfqDispatchService.test.ts) leave them behind with no teardown of
+    // their own, which is what previously made this global reset fail
+    // with a foreign-key violation on RFQDispatch_sourcingEventId_fkey.
+    prisma.rFQCommunicationEvent.deleteMany(),
+    prisma.rFQProviderDeliveryEvent.deleteMany(),
     prisma.quoteVersion.deleteMany(),
     prisma.supplierQuote.deleteMany(),
+    // RFQDispatch references SourcingEvent and Supplier — must be deleted
+    // before sourcingEvent.deleteMany() below (the fix for this bug).
+    prisma.rFQDispatch.deleteMany(),
     prisma.sourcingEvent.deleteMany(),
     prisma.requestLine.deleteMany(),
     prisma.procurementRequest.deleteMany(),
