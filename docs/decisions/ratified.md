@@ -3981,3 +3981,186 @@ AI Gateway implementation, does not establish an ERP integration
 foundation, and is not a substitute for populating
 `06-integration-model.md` or `07-ai-and-agent-model.md` — both remain
 exactly `NOT YET RECORDED`, unaffected by this entry.
+
+## Supplier Response Attribution Boundary (RFQ-ATT1)
+
+**Naming note:** this uses the new grouped prefix `RFQ-ATT` (RFQ
+Attribution), deliberately distinct from `RFQ-R1`–`RFQ-R5` (Response) —
+`RFQ-R` governs response lifecycle/handling semantics (targeting,
+consumption, transaction boundary, data scope); `RFQ-ATT` governs the
+separate question of what claim, if any, the system makes about who or
+what submitted a response. This is **not** `RFQ-R6`: folding it into
+the `RFQ-R` family would blur a distinction this decision exists
+specifically to keep sharp. Nothing in `RFQ-R1`–`RFQ-R5`, `RFQ-PD1`–
+`RFQ-PD20`, `M2`, `APO-D1`, `APO-D2`, `U3`, or `R12` is renamed,
+renumbered, reinterpreted, or altered by this entry — this is a
+consolidation and explicit naming of an already-ratified limitation,
+not a reopening of any of them. **This is a documentation-only
+ratification.** No application code, Prisma schema, migration, test,
+route, UI, or configuration change is introduced by this entry.
+
+**Context:** `SEC-010` (`docs/security/enforcement-matrix.md`,
+"Supplier authentication signal") has been recorded as `OPEN / DESIGN
+GAP` since before any RFQ work began. `RFQ-R1` already ratified, as an
+action-specific sufficiency judgment, that token possession is
+sufficient for the V1 Supplier Response action, and already disclaimed
+that the token "MUST NOT be interpreted as... authentication; supplier
+identity proof" — but that disclaimer has never been consolidated into
+its own citable, durable floor, and the subsequent introduction of
+`RFQ-PD1`–`RFQ-PD20` (provider mail-transport evidence) created a
+concrete new risk of future conflation between delivery evidence and
+supplier identity that did not exist when `RFQ-R1` was first ratified.
+
+**Evidence:** two independent, read-only assessments (a general
+post-`RFQ-PD` architecture assessment identifying this boundary as the
+highest-leverage next semantic gap; a dedicated semantic assessment of
+`SEC-010` specifically, distinguishing token possession, submission
+capability, submitter identity, supplier-organization identity,
+representative authorization, provenance, and commercial validity as
+seven non-collapsible concepts, and independently re-deriving this
+floor from `RFQ-R1`–`RFQ-R5`, `M2`, `APO-D1`/`APO-D2`, `U3`, and `R12`
+rather than inventing new semantics), 2026-10-07/08.
+
+### RFQ-ATT1 — V1 Supplier Response Non-Identity Attribution Floor
+
+**Statement:** For V1, the system makes no claim about the identity of
+the person or organization that submitted a Supplier Response, beyond
+the already-ratified `RFQ-R1`–`RFQ-R5` semantics.
+
+The system may establish and retain evidence that:
+
+- a valid, unexpired, unconsumed response token was used;
+- that token was generated for a specific `RFQDispatch`;
+- the `RFQDispatch` was server-resolved to the relevant tenant,
+  supplier, and sourcing context (`RFQ-R2`);
+- the response was submitted through the valid response mechanism
+  (`RFQ-R3`/`RFQ-R4`);
+- the four `RFQ-R5` commercial fields are exactly the submitted
+  structured values, subject to `RFQ-R5`'s reject-not-coerce semantics.
+
+**None of those facts establishes:**
+
+- the identity of the natural/legal person who physically submitted
+  the response;
+- that the supplier organization itself submitted the response;
+- that the submitter was an employee, representative, or authorized
+  agent of that supplier;
+- that the token was not forwarded, intercepted, shared, or otherwise
+  used by a party other than the intended recipient;
+- that any email/provider signal establishes supplier identity or
+  representative authority.
+
+**Mandatory semantic separations (must be preserved exactly):**
+
+```
+Token possession ≠ submitter identity ≠ supplier organization identity
+                 ≠ authorization to represent supplier ≠ commercial validity
+```
+
+```
+Provider delivery evidence ≠ email receipt ≠ email reading
+                            ≠ supplier acceptance ≠ commercial agreement
+                            ≠ supplier identity ≠ representative authority
+```
+
+The original outbound RFQ email dispatch establishes targeting
+intent/evidence only — never response origin. Email sender address,
+email domain, reply/thread correlation, or similar signals, if ever
+available in the future, remain evidence only, never identity or
+authority, unless a separate, future decision explicitly establishes
+such a claim (per `U3`'s own "new identity/domain requires explicit
+semantic mapping" guardrail). Multiple weak evidentiary signals must
+never be silently combined into an identity claim — correlation is not
+proof, regardless of how many weak signals are stacked.
+
+**`UNKNOWN` discipline:** attribution identity is not a graded V1
+confidence value. This ratification does **not** introduce attribution
+confidence scores, `LOW`/`MEDIUM`/`HIGH` attribution states, a
+persisted attribution-confidence field, inferred identity, or informal
+"probably the supplier" semantics. Where supplier-response identity is
+not established, it remains `UNKNOWN` / not claimed — consistent with
+`R12` ("confidence never substitutes for evidence") and the identical
+discipline already proven across `RFQ-S1`, `RFQ-RT2`, `RFQ-EH2`, and
+`RFQ-PD8`.
+
+**Downstream implications:** this ratification introduces **no new
+gate**. Lack of supplier identity authentication does **not**
+invalidate or block `SupplierQuote`/`QuoteVersion` creation,
+`RecommendationRecord` use, `DecisionPackage` creation, `Approval`, or
+`PurchaseOrder` creation. The existing ratified Decision + Approval
+chain remains the commercial safety mechanism, exactly as `RFQ-R1`'s
+own Evidence section already relies on:
+
+- `RecommendationRecord` remains non-authoritative, unchanged.
+- `DecisionPackage` remains subject to its existing freeze semantics,
+  unchanged.
+- `Approval` remains the normative authorization basis under
+  `M2`/`APO-D1`/`APO-D2`, unchanged.
+- `PurchaseOrder` remains subject to the existing valid-Approval/
+  frozen-DecisionPackage rules, unchanged.
+
+This decision must never be reinterpreted as an authorization grant —
+it states only what is *not* claimed, not what is newly permitted.
+
+**`RFQ-PD` relationship:** `RFQ-PD1`–`RFQ-PD20` do not establish, and
+have never established, supplier identity. Provider delivery evidence
+remains limited to provider mail-transport semantics (`RFQ-PD1`–
+`RFQ-PD20`'s own canonical separation already forbids reading it as
+supplier receipt, reading, acceptance, or agreement) and must
+additionally never be interpreted as supplier identity or
+representative authority. This is a direct, one-step extension of
+`RFQ-PD20`'s existing chain, not a new rule.
+
+### SEC-010 status (restated, not changed)
+
+`SEC-010` remains **OPEN** for future stronger supplier attribution/
+authentication, should a concrete trigger arise — e.g., a real security
+incident, a higher-risk procurement scope, a legal/compliance
+requirement, a contractual requirement, or an explicit business
+requirement. `RFQ-ATT1` is a **V1 limitation boundary**, consolidating
+and naming what `RFQ-R1` already disclaimed — it is explicitly **not**
+a claim that supplier authentication has been solved, and does not
+close `SEC-010`.
+
+### Explicit non-decisions
+
+This ratification does **not** design or authorize: supplier portal
+accounts; supplier login/authentication; supplier identity
+verification; representative authorization; verified-domain identity;
+email-based identity; any new canonical identity entity; any new
+Authority entity (per `U3`'s own "no canonical Authority entity"
+guardrail); any new Capability entity; an attribution-confidence schema
+field; any Approval UI/process change; any `RFQ-PD`/provider-delivery
+change; any RFQ response token mechanics change. Any future stronger
+attribution/authentication mechanism requires its own separate,
+future semantic/domain decision, mapping Authority/Capability/Tenant
+Binding/Temporal semantics/Enforcement per `U3`, exactly as any new
+identity/domain must.
+
+### Canonical separation (must be preserved exactly)
+
+```
+Token possession ≠ submitter identity ≠ supplier organization identity
+                 ≠ authorization to represent supplier ≠ commercial validity
+Provider delivery evidence ≠ supplier identity ≠ representative authority
+"Attribution not claimed" ≠ "data invalid" ≠ "fraud suspected"
+RFQ-ATT1 ≠ an authorization grant
+RFQ-ATT1 ≠ SEC-010 closure
+```
+
+### Non-Goals (explicitly not ratified by RFQ-ATT1)
+
+Everything listed under "Explicit non-decisions" above. Also:
+reopening or reinterpreting `RFQ-R1`–`RFQ-R5`, `RFQ-PD1`–`RFQ-PD20`,
+`M2`, `APO-D1`, `APO-D2`, `U3`, or `R12`; any disclosure-at-Approval
+mechanism (surfacing attribution weakness to a human approver) — a
+plausible future idea, not designed, authorized, or foreclosed here;
+any change to `SEC-010`'s general `OPEN` status in
+`docs/security/enforcement-matrix.md` beyond the cross-reference this
+entry adds.
+
+**Relationship to AI/ERP architecture:** this entry does not initiate
+AI Gateway implementation, does not establish an ERP integration
+foundation, and is not a substitute for populating
+`06-integration-model.md` or `07-ai-and-agent-model.md` — both remain
+exactly `NOT YET RECORDED`, unaffected by this entry.

@@ -287,6 +287,26 @@ event should be treated as an error and corrected, not built upon.
   diagnostic metadata for manual human investigation. No such
   investigation tooling, query, or UI exists or is ratified — this
   remains fully OPEN.
+- **`SEC-010` — Supplier authentication signal — V1 limitation
+  explicitly ratified, control itself remains OPEN.** `RFQ-ATT1`
+  (`docs/decisions/ratified.md`) now consolidates and names, as a
+  citable floor, what `RFQ-R1` already disclaimed: the system makes no
+  claim about the identity of the person or organization that
+  submitted a Supplier Response, beyond `RFQ-R1`–`RFQ-R5`'s existing
+  targeting/consumption/data-scope semantics; attribution remains
+  `UNKNOWN`/not claimed, never a graded confidence value, and provider
+  delivery evidence (`RFQ-PD1`–`RFQ-PD20`) must never be read as
+  supplier identity or representative authority. `RFQ-ATT1` does
+  **not** close `SEC-010` (`docs/security/enforcement-matrix.md`) —
+  that control remains fully OPEN for any future stronger supplier
+  attribution/authentication mechanism, which would require its own
+  separate, future semantic/domain decision if a concrete trigger
+  arises (a security incident, higher-risk procurement scope, legal/
+  compliance or contractual requirement, or explicit business need).
+  No supplier portal, login, identity verification, representative-
+  authorization mechanism, or attribution-confidence schema field is
+  introduced or designed by `RFQ-ATT1` — all remain exactly as open as
+  before this entry.
 - **Enterprise/legal data residency policy for YGT (general)** — whether
   YGT requires a stronger, absolute data-residency guarantee than the
   capability-level configuration ratified at `RFQ-EP2`/`RFQ-EP3`; this is
