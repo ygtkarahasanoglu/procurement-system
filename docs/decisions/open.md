@@ -107,7 +107,10 @@ event should be treated as an error and corrected, not built upon.
   (e.g., quote revision/requote policy needing to distinguish superseding
   an already-answered RFQ from retrying an unanswered one; or provider
   message ID adoption making per-attempt tracking a real domain need).
-  Not resolved by `RFQ-RT1`–`RFQ-RT5`.
+  Not resolved by `RFQ-RT1`–`RFQ-RT5`. `RFQ-EH9` (`docs/decisions/
+  ratified.md`) further restates, without adding a new trigger, that RFQ
+  Event History's own historical send-attempt-result records are not a
+  `SendAttempt` entity and do not resolve this item either.
 - **Stuck-`SENDING` recovery** — how an RFQDispatch left in `SENDING`
   (e.g., after a provider timeout or a process crash mid-attempt) is
   eventually resolved to a terminal outcome (see `ratified.md`, `RFQ-S1`).
@@ -119,17 +122,29 @@ event should be treated as an error and corrected, not built upon.
   (Twilio SendGrid) does not, by itself, authorize `SENDING → SENT`,
   `SENDING → SEND_FAILED`, or `SENDING → retry` based on timeout, elapsed
   time, or human confidence alone — it likewise does not define the
-  eventual recovery mechanism.
+  eventual recovery mechanism. `RFQ-EH6` (`docs/decisions/ratified.md`)
+  additionally ratifies only that RFQ Event History does not resolve,
+  narrow, or add any new guarantee to this same boundary — a local
+  database write failure after a genuine provider acceptance still
+  leaves the dispatch in `SENDING`, with no corresponding event
+  recorded, exactly as before this family's introduction. `RFQ-EH6`'s
+  own `UNKNOWN`-event recording semantics (now fully specified: an
+  `UNKNOWN` outcome is itself a recorded historical event, in its own
+  separate local transaction, never paired with a state transition that
+  does not occur) likewise do not resolve this recovery mechanism —
+  recording that an outcome was unknown is not the same as resolving it.
 - **Provider timeout / unknown outcome handling** — the eventual recovery
   mechanism for a SEND attempt whose outcome could not be determined (see
   `ratified.md`, `RFQ-S1`); `RFQ-S1` ratifies only that such an attempt
   remains `SENDING`, not how it is later resolved.
 - **Provider message ID / delivery confirmation** — the *existence* of an
   opaque provider message ID as a correlation primitive is now RATIFIED
-  (see `ratified.md`, `RFQ-EP4`). Still OPEN: its exact field name/schema
-  representation; whether/when it is added to `RFQDispatch`; delivery
-  confirmation; bounce status capture; and any audit/forensic model it
-  might eventually feed into.
+  (see `ratified.md`, `RFQ-EP4`). Its meaning *within* RFQ Event History
+  specifically — associable only with a historical successful-acceptance
+  event, never delivery proof or an idempotency key — is now also
+  RATIFIED (`RFQ-EH5`). Still OPEN: its exact field name/schema
+  representation in `RFQDispatch` and in any future Event History table;
+  delivery confirmation; bounce status capture.
 - **Email provider selection** — **RESOLVED.** Twilio SendGrid is the
   selected real email provider for the initial RFQ outbound email
   integration, with an EU regional deployment configuration (EU subuser,
@@ -157,6 +172,34 @@ event should be treated as an error and corrected, not built upon.
   YGT requires a stronger, absolute data-residency guarantee than the
   capability-level configuration ratified at `RFQ-EP2`/`RFQ-EP3`; this is
   a business/legal decision, not resolved by this family.
+- **RFQ Communication & Response Event History — persistence/
+  implementation** — `RFQ-EH1`–`RFQ-EH9` (`docs/decisions/ratified.md`)
+  now RATIFY the semantics in advance of implementation (purpose/
+  non-authority, minimum recordable event scope, retry/resend
+  representation, data boundary, `providerMessageId`'s in-history
+  meaning, append-only/transactional discipline, the tenant/read-
+  authorization floor, domain-specific actor/source classification, and
+  `SendAttempt` deferral), following the same Fast Track pattern already
+  used for `RFQ-S1`/`RFQ-S2` and `RFQ-R1`–`RFQ-R5`. Still fully OPEN:
+  every implementation detail — the exact table/column design, the
+  exact service function(s), the exact route/UI (if any), the exact
+  role set permitted to read it (only the tenant-bound/authenticated
+  floor is ratified, per `RFQ-EH7`), and the exact actor/source field
+  representation (`RFQ-EH8`). The read-authorization boundary's *floor*
+  is RATIFIED (`RFQ-EH7`: reuse of the application's existing
+  established workflow read-authorization policy, no new role/
+  permission taxonomy) — but the *exact* existing role/policy to reuse
+  is not itself re-derived or re-selected by this family and remains an
+  implementation-time lookup, not a newly invented decision point. No
+  table, migration, or code exists for this yet.
+- **Broader audit/event-sourcing scope (deferred)** — a universal
+  `AuditLog` entity; Approval/PurchaseOrder audit; ERP audit; AI/agent
+  audit; a retention policy; a legal/compliance retention framework; a
+  cross-domain event bus; a generic event-sourcing architecture. All are
+  explicitly named as Non-Goals by `RFQ-EH1`–`RFQ-EH9` (`docs/decisions/
+  ratified.md`) and remain fully OPEN — each would require its own
+  separate future ratification if a concrete trigger arises, per `U3`'s
+  own domain-specific-enforcement guardrail.
 - **Quote resubmission/requote/versioning** — whether a supplier may
   submit more than one response/quote version for the same RFQDispatch or
   SourcingEvent (cross-referenced from the existing `QuoteVersion`

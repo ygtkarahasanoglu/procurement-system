@@ -3033,3 +3033,437 @@ webhook ingestion; webhook authenticity/trust mechanism; webhook data
 residency/handling; any broader enterprise/legal data-residency policy
 for YGT; any provider SDK, credential, environment configuration, or
 adapter implementation. All remain exactly as recorded in `open.md`.
+
+## RFQ Communication & Response Event History (RFQ-EH1–RFQ-EH9)
+
+**Naming note:** this family uses the grouped prefix `RFQ-EH` (RFQ Event
+History), distinguishing it from `RFQ-S1`/`RFQ-S2` (Send), `RFQ-R1`–
+`RFQ-R5` (Response), `RFQ-RT1`–`RFQ-RT5` (Retry/Resend), and `RFQ-EP1`–
+`RFQ-EP8` (Email Provider). None of those families is renamed,
+renumbered, or altered by this family's introduction. **This is a
+documentation-only ratification.** No table, column, migration, service
+function, route, UI, or test is introduced by any decision in this
+family — exactly as `RFQ-S1`/`RFQ-S2` ratified SEND semantics before any
+SEND code existed, and `RFQ-R1`–`RFQ-R5` ratified Supplier Response
+semantics "in advance of that implementation."
+
+**Decision intent:** to establish a tenant-scoped, append-only,
+auditable history of the RFQ communication and supplier-response
+lifecycle — a record of "what happened," not an authoritative source of
+current workflow state, not a replacement for Procurement Core state,
+not Execution Authority, not Approval, not a universal cross-domain
+`AuditLog`, and not a quote/PDF/evidence-ingestion repository.
+
+**Evidence:** independent, read-only architecture/decision assessment
+(repository-state analysis of `rfqDispatchService.ts`, `RFQDispatch`'s
+existing schema, the `RFQ-S1`/`RFQ-S2`/`RFQ-R1`–`RFQ-R5`/`RFQ-RT1`–
+`RFQ-RT5`/`RFQ-EP1`–`RFQ-EP8` families, `U3`'s guardrails, and
+`SEC-023`/`SEC-024`), cross-checked for consistency against all of the
+above, 2026-10-07.
+
+### RFQ-EH1 — Event History Purpose & Non-Authority
+
+**Statement:** RFQ Event History exists to answer "what happened" —
+forensic/audit history of the RFQ communication and supplier-response
+lifecycle. It is explicitly **not**:
+
+- the authoritative source of current workflow state (`RFQDispatch`
+  remains exactly that, unchanged);
+- a second state machine that reconstructs or re-derives workflow
+  transitions;
+- Execution Authority (`B2`);
+- Approval (`M2`);
+- a universal, cross-domain `AuditLog` entity;
+- a quote/PDF/evidence-ingestion repository (`R11`'s evidence pipeline
+  and its non-goals, `RFQ-R5`'s own Non-Goals, are unaffected and
+  unchanged by this family).
+
+**Scope:** Restates and does not modify `RFQ-S1`, `RFQ-S2`, `RFQ-R1`–
+`RFQ-R5`, `RFQ-RT1`–`RFQ-RT5`, or `RFQ-EP1`–`RFQ-EP8` — all remain
+exactly as previously ratified. `RFQDispatch` remains the sole
+authoritative current-state record for the RFQ send/response lifecycle.
+
+**Explicit non-decisions:** whether/how this pattern ever generalizes to
+other domains (Approval, PurchaseOrder, ERP, AI/agent actions) — each
+would require its own separate future ratification, per `U3`'s own
+"domain-specific enforcement unless explicitly ratified otherwise"
+guardrail. None of that is ratified or implied here.
+
+### RFQ-EH2 — Recordable Event Scope (Minimum Set)
+
+**Statement:** The initial scope of RFQ Event History is the RFQ
+communication and supplier-response domain only. At minimum, the
+following domain-significant events are recordable:
+
+1. **RFQDispatch created** — preserving the distinction between an
+   initial communication and a resend/new-dispatch communication
+   (`RFQ-RT5`).
+2. **RFQ send attempt result** — preserving the distinction between an
+   initial send and a same-dispatch retry (`RFQ-RT1`/`RFQ-RT3`), with a
+   historical outcome recorded as exactly one of `ACCEPTED`, `FAILED`,
+   or `UNKNOWN` — the canonical historical outcome vocabulary, defined
+   precisely below — and, where present, the opaque `providerMessageId`
+   (`RFQ-EP4`, see `RFQ-EH5` below).
+3. **Supplier response received** — referencing the `RFQDispatch` it
+   responds to and the `QuoteVersion` it produced, without copying the
+   supplier's submitted content into the event record (see `RFQ-EH4`).
+
+**Canonical historical outcome vocabulary (clarifying amendment):**
+`ACCEPTED`/`FAILED`/`UNKNOWN` is **the one and only** canonical, stored
+historical-outcome vocabulary for a send-attempt-result event. It is
+**not** a second, parallel vocabulary alongside the existing runtime
+`SendOutcome.kind` (`success`/`failure`/`unknown`, `RFQ-S1`/`RFQ-RT2`) —
+it **is** that same vocabulary's fixed historical representation, under
+a single, non-discretionary mapping:
+
+```
+SendOutcome.kind "success" → historical outcome ACCEPTED
+SendOutcome.kind "failure" → historical outcome FAILED
+SendOutcome.kind "unknown" → historical outcome UNKNOWN
+```
+
+No implementation may introduce a different literal label, a third
+vocabulary, or any discretion in this mapping. Exact normative meaning
+of each value, so no misreading is possible:
+
+- **`ACCEPTED`** — the historical fact that the provider accepted the
+  send request at that point in time. It does **not** mean delivered,
+  inboxed, or read — `RFQ-EP5`'s "accepted ≠ delivered" boundary applies
+  identically to this historical representation.
+- **`FAILED`** — the historical fact that the provider returned a
+  deterministic, known-now non-success signal (`RFQ-RT2`). It does
+  **not** mean the failure is permanent, and does **not** mean the
+  corresponding `RFQDispatch` can never be retried — `RFQ-RT3`'s
+  same-dispatch retry eligibility from `SEND_FAILED` is unaffected.
+- **`UNKNOWN`** — the historical fact that, at that point in time, the
+  outcome could not be reliably determined. It does **not** mean, imply,
+  or authorize recovery, reconciliation, or any resolution of that
+  attempt — the full recording semantics for this value are given in
+  `RFQ-EH6` below.
+
+**None of `ACCEPTED`/`FAILED`/`UNKNOWN` is an `RFQDispatch` state.**
+`RFQDispatch.status` remains exactly `PENDING`/`SENDING`/`SENT`/
+`SEND_FAILED`, per `RFQ-S1`, entirely unchanged by this vocabulary. This
+family introduces no new, parallel workflow state machine — only a
+fixed, historical label for the already-ratified `SendOutcome` concept.
+
+**Scope:** Establishes only this minimum recordable set, and the fixed
+historical-outcome vocabulary above, for the initial scope. Does not
+ratify a specific table/column design, a specific service function, or
+any other implementation detail.
+
+**Explicit non-decisions:** any event type belonging to Approval,
+PurchaseOrder, ERP, AI/agent actions, delivery/bounce webhooks, or any
+other domain outside RFQ communication/response. None of these are
+ratified now — see Non-Goals below.
+
+### RFQ-EH3 — Retry/Resend Representation in Event History
+
+**Statement:** Event History must represent retry and resend exactly as
+`RFQ-RT1`–`RFQ-RT5` already define them, and must not reinterpret or
+narrow that semantics:
+
+- **Retry** continues the same `RFQDispatch`'s own event history — a
+  retry's send-attempt-result event references the *same* `RFQDispatch`
+  identity as the original attempt.
+- **Resend** creates a *new*, independent `RFQDispatch`, which begins
+  its own, independent event history. The prior `RFQDispatch`'s existing
+  event history is never mutated, merged, or reattributed as a
+  consequence of a resend.
+
+**Scope:** Restates, and does not modify, narrow, or extend,
+`RFQ-RT1`–`RFQ-RT5`. Event History is a read/write *consumer* of that
+already-ratified semantics, never a redefinition of it.
+
+**Explicit non-decisions:** any replacement/lineage relation between
+dispatches (e.g. `replacementOfDispatchId`) — `RFQ-RT5`'s own Non-Goals
+on this point are unaffected and unchanged; Event History does not
+introduce such a relation under a different name.
+
+### RFQ-EH4 — Data Boundary / Field Minimality
+
+**Statement:** Event History records only explicitly justified,
+structured fields — never an unrestricted, generic JSON blob as the
+canonical model, and never a copy of sensitive or unbounded commercial
+content. The following must **never** be captured in Event History,
+under any circumstance:
+
+- the raw RFQ email body;
+- the response token, in raw or hashed form;
+- any API key, Authorization header, or other secret;
+- the raw provider response body, or any unneeded provider payload
+  beyond the opaque correlation value (`RFQ-EH5`);
+- another tenant's data, under any condition;
+- the supplier's submitted commercial content (quantity, unit price,
+  currency, etc.) copied into event metadata without bound — that
+  content already has its own authoritative, immutable home
+  (`QuoteVersion`, per `RFQ-R5`/`RFQ-R4`); Event History may *reference*
+  the resulting `QuoteVersion`, never duplicate its content.
+
+**Scope:** Establishes a negative boundary (what must never be
+captured) and a structural principle (structured, justified fields
+only — not a generic blob), not a positive field-by-field schema. The
+exact field list is an implementation detail, deferred.
+
+**Non-normative implementation guidance (not a schema/column
+ratification):** whatever positive field set an eventual implementation
+chooses should, at minimum, be able to express: which event type
+occurred; the tenant it belongs to; the relevant RFQ/dispatch identity
+it concerns; when it occurred; the domain-specific actor/source
+(`RFQ-EH8`); the historical outcome, for send-result events
+(`RFQ-EH2`); and the opaque `providerMessageId`, when applicable
+(`RFQ-EH5`). This paragraph names the *kinds* of information already
+implied by `RFQ-EH2`/`RFQ-EH5`/`RFQ-EH7`/`RFQ-EH8` — it does not ratify
+any column name, type, or table design, and must not be read as doing
+so.
+
+**Explicit non-decisions:** the exact column/field list beyond what
+`RFQ-EH2` already names; any specific table design. None of these are
+ratified here — remain OPEN, implementation-scoped.
+
+### RFQ-EH5 — `providerMessageId` Within Event History
+
+**Statement:** Within Event History, `providerMessageId` retains exactly
+its `RFQ-EP4` meaning — an opaque correlation primitive. It is **not**:
+
+- delivery proof;
+- an idempotency key (`RFQ-EP6`);
+- an authorization or authority signal of any kind.
+
+A historical send-attempt-result event may associate a `providerMessageId`
+with that event **only** when the attempt's own outcome was a successful
+provider acceptance (`RFQ-EH2` item 2) — mirroring `rfqDispatchService.ts`'s
+own existing discipline of persisting it only alongside an explicit
+success outcome, never inventing or inferring one for a failed or
+unknown attempt.
+
+**Scope:** Restates, and is fully compatible with, `RFQ-EP4` — this
+entry does not modify, narrow, or extend `RFQ-EP4` in any way. It
+establishes only that Event History's own future implementation must
+preserve that same discipline, not a new one.
+
+### RFQ-EH6 — Immutability / Append-Only, and Transactional Scope
+
+**Statement:** Event History is an append-only historical record. In
+normal application flow: no update of an existing event, no delete, and
+no rewrite of a previously recorded event, ever.
+
+Where a domain-state transition and its corresponding event recording
+are both purely local database operations, they should be considered
+for the same transaction boundary — for example, `RFQDispatch` creation
+and its corresponding creation event; or a `SENDING→{SENT,SEND_FAILED}`
+final-state write and its corresponding send-attempt-result event. This
+restates the existing transactional discipline already established for
+comparable local-only operations (e.g. `RFQ-R4`'s token-consumption +
+`QuoteVersion`-creation transaction), extended to this new record type.
+
+**The external provider side-effect is explicitly excluded from any
+such transaction** — exactly as `RFQ-S1`'s own "Prepare≠Transmit"
+(`SEC-014`) reasoning already excludes the `EmailSender.send()` call
+from the SEND claim's own transaction boundary. Consequently: if a
+provider genuinely accepts a send (a real external `ACCEPTED`) but the
+subsequent local database write then fails — including the write that
+would have recorded that event — the dispatch remains in `SENDING` and
+no corresponding event is recorded. **This is not a new, unresolved
+problem.** It is `RFQ-EP8`'s own stuck-`SENDING`/`unknown` boundary,
+unchanged. Event History must **not** be read as having resolved,
+narrowed, or added any new guarantee to that boundary — it has not.
+
+**`UNKNOWN` event recording semantics (clarifying amendment):** An
+`UNKNOWN` send-attempt-result outcome (`RFQ-EH2`) is addressed
+explicitly, because it is the one case with no corresponding
+`RFQDispatch` state write to pair it with:
+
+1. An `UNKNOWN` outcome **is** itself a recordable historical event —
+   its lack of a corresponding state transition does not mean it goes
+   unrecorded.
+2. An `UNKNOWN` event is **never** paired with, or recorded as a
+   consequence of, a `SENT` or `SEND_FAILED` state transition — because,
+   per `RFQ-S1`/`RFQ-RT2`, no such transition occurs for an `UNKNOWN`
+   outcome in the first place. There is nothing to pair it with.
+3. The `UNKNOWN` event records exactly one historical fact: that the
+   provider's outcome could not be reliably determined at that point in
+   time. `RFQDispatch.status` remains `SENDING`, unchanged, for exactly
+   as long as it already would have under `RFQ-S1`/`RFQ-RT2`/`RFQ-EP8`
+   alone.
+4. The `UNKNOWN` event's own persistence is **never** part of the same
+   transaction as the external provider operation — consistent with
+   `SEC-014`'s "Prepare≠Transmit" boundary, which already excludes
+   `EmailSender.send()` from any local transaction.
+5. Once the provider call returns (or the attempt times out / fails at
+   the transport level, per `RFQ-S1`'s own provider-timeout clause) and
+   is classified `UNKNOWN`, the historical record of that classification
+   is appended via its **own, separate, local-only database
+   transaction** — distinct from, and not conditioned on, any
+   `RFQDispatch` state-transition write, since none occurs.
+6. That transaction's scope is the historical event insertion alone. It
+   does **not** read, lock, or write `RFQDispatch.status` or any other
+   current-state field.
+7. If that historical event insert itself fails (e.g., a dropped
+   database connection): `RFQDispatch` remains in `SENDING`, exactly as
+   it already would have regardless; the system does **not** treat
+   `UNKNOWN` as resolved merely because an event-recording attempt
+   occurred; `RFQ-EP8`'s stuck-`SENDING` boundary applies exactly as
+   before, unchanged; and Event History's own availability (or
+   unavailability) never becomes, or is read as, current-state authority
+   — `RFQ-EH1`'s non-authority boundary is unaffected.
+8. This does **not** create a new `RFQDispatch` state. No
+   `SENDING → UNKNOWN` (or equivalent) transition of any kind exists.
+   The dispatch's own state vocabulary remains exactly `PENDING`/
+   `SENDING`/`SENT`/`SEND_FAILED`, per `RFQ-S1`, completely unchanged.
+   "An `UNKNOWN` event was recorded" and "the dispatch transitioned to a
+   new state" are two different, non-overlapping facts — only the
+   former ever occurs.
+9. Whether a later recovery/reconciliation mechanism ever reads or acts
+   upon a previously-recorded `UNKNOWN` event is explicitly **not**
+   decided here — any such mechanism remains its own, separate, future
+   decision (the stuck-`SENDING` recovery item, `open.md`), not
+   resolved, narrowed, or implied by this clarification.
+
+**The normative distinction this clarification makes explicit:** an
+event being recorded and a state transition occurring are two
+independent facts. `UNKNOWN` handling is the concrete proof of
+`RFQ-EH1`'s "not a second state machine" boundary — an event can exist
+precisely where no corresponding state transition exists at all.
+
+**Scope:** Restates, and does not modify, `RFQ-S1`, `SEC-014`, `RFQ-R4`,
+or `RFQ-EP8`. Establishes only that Event History's own future write
+discipline must follow the same local-only-atomicity pattern already
+established elsewhere in this codebase, and the `UNKNOWN`-specific
+recording semantics above.
+
+**Explicit non-decisions:** any stuck-`SENDING` recovery mechanism;
+whether a later reconciliation process might ever retroactively
+construct a missing event from other evidence, or ever act upon a
+previously-recorded `UNKNOWN` event — not ratified, not assumed, remains
+fully OPEN exactly as `RFQ-EP8` already states it.
+
+### RFQ-EH7 — Tenant Scope & Read Authorization Boundary
+
+**Statement:** Event History is strictly tenant-scoped — every event
+belongs to exactly one tenant, with the same tenant-isolation discipline
+already applied to every other tenant-scoped record in this codebase
+(`R10`, `R15`/`SEC-012`).
+
+**Minimum read-authorization boundary (`SEC-024`), clarified:** no actor
+without an authenticated `Principal` bound to the event's own tenant may
+read Event History, under any circumstance. More specifically: Event
+History may be read **only** within the application's existing,
+already-established authenticated, tenant-scoped workflow
+read-authorization boundary — the same boundary that already governs
+reading comparable RFQ/procurement workflow data — reusing the existing
+application-authorization mechanism (the `assertActorAuthorized`-style
+pattern already used throughout this codebase).
+
+This is a floor, **not** an invitation to invent anything new, and
+**not** a statement that the role set is unconstrained:
+
+- No new role, permission, or authorization taxonomy is created for
+  Event History specifically.
+- The first implementation **must** reuse the application's existing,
+  already-established read-authorization policy for RFQ/procurement
+  workflow data — it may not invent a novel role, permission, or
+  authorization check at implementation time.
+- Exact role membership is **derived from** that already-established
+  policy, not chosen freely by the implementer — this entry does not
+  mean the role set is open-ended; it means only that this specific
+  decision does not itself re-litigate or re-select that policy (which
+  governs reading, a different question from `RFQ-S2`'s own role gate
+  on the SEND *action*, and is not presumed here to be the same set
+  without being confirmed against whichever policy the application's
+  existing read paths actually apply).
+
+**Explicitly excluded:** the unauthenticated, token-scoped public
+Supplier Response boundary (`RFQ-R1`/`RFQ-R2`) must never gain read
+access to Event History. Token possession (`RFQ-R1`) remains a narrow,
+single-purpose capability for submitting exactly one response — it is
+not, and must never become, a credential for reading any history,
+including the supplier's own.
+
+**Scope:** Restates, and does not modify, `R10`, `R15`, `SEC-012`,
+`SEC-023`, `SEC-024`, `RFQ-R1`, or `RFQ-R2`. Establishes only the
+minimum boundary above as a floor for Event History's own future
+implementation.
+
+**Explicit non-decisions:** the exact role set; the exact route/UI;
+whether a supplier should ever be shown any part of their own
+communication history through some future, separate, explicitly-scoped
+mechanism — not ratified, not foreclosed, remains OPEN.
+
+### RFQ-EH8 — Actor/Source Classification (Domain-Specific, Not Universal)
+
+**Statement:** Event History may carry a domain-level actor/source
+classification — for example, distinguishing an internal user, the
+system itself, the supplier, or the provider as the source of a given
+event. This is a **domain-specific** classification for this event
+type only.
+
+**This does NOT ratify:** a universal `Actor` or `Authority` entity; a
+shared, cross-domain actor/authority representation; or any mechanism
+that would collapse this domain-specific classification into a general
+authorization concept. `U3`'s guardrails — no canonical Authority
+entity, no shared audit representation by default — remain fully
+intact and are not weakened by this entry.
+
+**Scope:** Establishes only that a narrow, domain-specific actor/source
+field *may* exist for Event History specifically. Does not ratify its
+exact representation (enum, string, relation, or otherwise) — deferred,
+implementation-scoped.
+
+### RFQ-EH9 — `SendAttempt` Deferral Restated
+
+**Statement:** No `SendAttempt` (or equivalent per-attempt operational
+domain entity) is introduced by this family. Event History's
+send-attempt-result records (`RFQ-EH2` item 2) are **historical
+records**, not an operational retry-identity primitive — they describe
+what happened, after the fact; they are not consulted by, or load-bearing
+for, `rfqDispatchService.ts`'s own CAS/retry logic, which continues to
+rely exclusively on `RFQDispatch.status` exactly as `RFQ-S1`/`RFQ-RT1`–
+`RFQ-RT5` already establish.
+
+**Scope:** Restates, and does not modify, `RFQ-RT5`'s own Non-Goals (no
+`SendAttempt` now) and `RFQ-EP4`'s own Non-Goals (same). This entry adds
+no new trigger beyond those two already-recorded ones; it narrows
+nothing and forecloses nothing. Should per-attempt operational tracking
+(as distinct from historical recording) ever become a genuine domain
+need — e.g., a future recovery/reconciliation mechanism needing to
+distinguish concurrent in-flight attempts, not merely record completed
+ones — `SendAttempt` remains available for its own separate, future
+ratification, exactly as already stated.
+
+### Canonical separation (must be preserved exactly)
+
+```
+Event History ≠ current workflow state
+Event History ≠ Procurement Core authoritative state
+Event History ≠ Execution Authority
+Event History ≠ Approval
+Event History ≠ universal cross-domain AuditLog
+Event History ≠ evidence/quote/PDF ingestion repository
+Event History ≠ SendAttempt (operational retry-identity primitive)
+providerMessageId ≠ delivery proof
+providerMessageId ≠ idempotency key
+Domain-specific actor/source classification ≠ universal Actor/Authority entity
+Retry (same RFQDispatch) ≠ Resend (new RFQDispatch) — unchanged from RFQ-RT1
+Historical outcome recorded ≠ RFQDispatch state transition (UNKNOWN proves this concretely)
+ACCEPTED/FAILED/UNKNOWN (historical) = success/failure/unknown (SendOutcome.kind) — one vocabulary, not two
+```
+
+### Non-Goals (explicitly not ratified by RFQ-EH1–RFQ-EH9)
+
+A universal `AuditLog` entity; Approval/PurchaseOrder audit; ERP audit;
+AI/agent audit; quote/PDF/evidence ingestion; delivery/bounce webhook
+audit; a SendGrid Event Webhook implementation; stuck-`SENDING`
+recovery; provider idempotency; a retention policy; a legal/compliance
+retention framework; a cross-domain event bus; a generic event-sourcing
+architecture; Execution Authority; a `SendAttempt` domain entity; any
+table, migration, service function, route, UI, or test. Each of these
+may require its own separate future ratification if a concrete trigger
+arises — none is resolved, narrowed, or foreclosed by this family. All
+remain exactly as recorded in `open.md`.
+
+**Relationship to AI/ERP architecture:** this family does not initiate
+AI Gateway implementation, does not establish an ERP integration
+foundation, and is not, and must never be read as, a substitute for
+populating `06-integration-model.md` or `07-ai-and-agent-model.md` —
+both remain exactly `NOT YET RECORDED`, unaffected by this entry.
