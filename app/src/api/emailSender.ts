@@ -20,8 +20,17 @@ export interface SendEmailInput {
 // success or failure would force sendRFQDispatch to assert a fact it
 // does not have, which RFQ-S1 explicitly forbids (a timeout/unknown
 // outcome must leave the dispatch SENDING, never SEND_FAILED).
+//
+// providerMessageId (RFQ-EP4, docs/decisions/ratified.md): an opaque,
+// optional correlation identifier a real provider may return on
+// acceptance (e.g. SendGrid's X-Message-ID). It is never interpreted by
+// Procurement Core, never a delivery-status signal, and never an
+// idempotency key (RFQ-EP6) — purely a handle for future
+// correlation/forensic use. Absent whenever a provider doesn't supply
+// one; this must never be downgraded to failure/unknown on that basis
+// alone.
 export type SendOutcome =
-  | { kind: "success" }
+  | { kind: "success"; providerMessageId?: string }
   | { kind: "failure"; reason: string }
   | { kind: "unknown" };
 

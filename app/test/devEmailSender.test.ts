@@ -48,11 +48,11 @@ describe("createDevEmailSender", () => {
     expect(source).not.toMatch(/console\./);
   });
 
-  it("is never selected as createApp's default dependency (DEFAULT_SEND_DEPS in server.ts still uses unconfiguredEmailSender)", async () => {
+  it("is never selected as createApp's default dependency (DEFAULT_SEND_DEPS in server.ts uses the real SendGrid adapter, per RFQ-EP1, never createDevEmailSender)", async () => {
     const source = await readFile(join(__dirname, "../src/api/server.ts"), "utf-8");
     const defaultDepsBlock = source.match(/const DEFAULT_SEND_DEPS[\s\S]*?};/);
     expect(defaultDepsBlock).not.toBeNull();
-    expect(defaultDepsBlock![0]).toMatch(/unconfiguredEmailSender/);
+    expect(defaultDepsBlock![0]).toMatch(/sendGridEmailSender/);
     expect(defaultDepsBlock![0]).not.toMatch(/createDevEmailSender/);
   });
 

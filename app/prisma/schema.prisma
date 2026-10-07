@@ -202,6 +202,13 @@ model RFQDispatch {
   respondedAt       DateTime?
   createdAt         DateTime      @default(now())
 
+  // RFQ-EP4 (docs/decisions/ratified.md): opaque provider correlation
+  // identifier only (e.g. SendGrid's X-Message-ID) — not Core authority,
+  // not a lifecycle state, not delivery confirmation, not an idempotency
+  // key. Null whenever the provider did not return one (deterministic
+  // failure, or a success response that omitted it).
+  providerMessageId String?
+
   supplierQuotes SupplierQuote[]
 
   @@index([tenantId])

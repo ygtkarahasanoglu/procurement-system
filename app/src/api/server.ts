@@ -19,18 +19,20 @@ import type { Authenticator, Principal } from "./principal";
 import { assertTenantMatches } from "./tenantBinding";
 import { createAuthRouter } from "./authRoutes";
 import { sessionAuthenticator } from "./sessionAuthenticator";
-import { unconfiguredEmailSender } from "./emailSender";
+import { sendGridEmailSender } from "./sendgridEmailSender";
 import { createDevEmailSender } from "./devEmailSender";
 
 // Default RFQ SEND dependencies for every existing/future createApp()
 // caller that does not explicitly inject its own (every existing test
 // file calls createApp(authenticator) with one argument — this default
-// keeps all of them compiling and behaving exactly as before). No real
-// email provider is selected here; this placeholder is never actually
-// reachable from a real transport (provider selection remains OPEN,
-// docs/decisions/open.md).
+// keeps all of them compiling and behaving exactly as before).
+// RFQ-EP1 (docs/decisions/ratified.md): Twilio SendGrid is now the real,
+// wired default — unconfiguredEmailSender is no longer used here. A
+// deployment without SENDGRID_API_KEY/SENDGRID_FROM_EMAIL set does not
+// fail to start; each individual send attempt fails deterministically
+// instead (sendgridEmailSender.ts's own lazy config load).
 const DEFAULT_SEND_DEPS: SendRFQDispatchDeps = {
-  emailSender: unconfiguredEmailSender,
+  emailSender: sendGridEmailSender,
   responseBaseUrl: "http://localhost:3000",
 };
 
@@ -439,9 +441,16 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
   // principal's own tenantId is simply the sole input.
   app.post(
     "/rfq-dispatches/:id/send",
-    wrap((req) =>
-      rfqDispatchService.sendRFQDispatch(req.principal!.tenantId, req.principal!.userId, req.params.id, sendDeps)
-    )
+    wrap(async (req) => {
+      const result = await rfqDispatchService.sendRFQDispatch(req.principal!.tenantId, req.principal!.userId, req.params.id, sendDeps);
+      // Dispatch-id-aware log line, here rather than in
+      // rfqDispatchService.ts, which deliberately never logs anything
+      // (see supplierResponse.test.ts). Never logs the response token,
+      // tenant/actor id, or any secret — only the dispatch id (already
+      // a public URL path segment) and its resulting status.
+      console.log(`[rfq-send] dispatch=${req.params.id} outcome=${result.status}`);
+      return result;
+    })
   );
 
   // RFQ-RT1/RFQ-RT3 (docs/decisions/ratified.md) — same-dispatch retry,
@@ -454,9 +463,11 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
   // retryRFQDispatch's own CAS).
   app.post(
     "/rfq-dispatches/:id/retry",
-    wrap((req) =>
-      rfqDispatchService.retryRFQDispatch(req.principal!.tenantId, req.principal!.userId, req.params.id, sendDeps)
-    )
+    wrap(async (req) => {
+      const result = await rfqDispatchService.retryRFQDispatch(req.principal!.tenantId, req.principal!.userId, req.params.id, sendDeps);
+      console.log(`[rfq-retry] dispatch=${req.params.id} outcome=${result.status}`);
+      return result;
+    })
   );
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars

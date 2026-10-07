@@ -259,14 +259,34 @@ async function performRFQDispatchSendAttempt(
     body: composed.body,
   });
 
+  // Deliberately no logging call of any kind anywhere in this file
+  // (existing, pre-dating invariant — see supplierResponse.test.ts
+  // "Q. the implementation never logs anything"). Dispatch-id-aware
+  // logging belongs in the route layer (server.ts), which already uses
+  // that mechanism and has the dispatch id via the request path
+  // parameter; provider-level detail is logged separately, by the
+  // adapter itself.
+
   if (outcome.kind === "unknown") {
+    // RFQ-S1/RFQ-RT2: no final-state write for unknown — the dispatch
+    // remains SENDING. providerMessageId is never persisted here: it is
+    // only ever recorded alongside an explicit SUCCESS outcome, never
+    // invented or inferred for an outcome this system does not yet know.
     return { status: "SENDING" as const };
   }
 
+  // RFQ-EP4 (docs/decisions/ratified.md): providerMessageId is persisted
+  // only on the success branch, as part of this same final-state write —
+  // no separate write, no separate transaction. On deterministic
+  // failure, it is deliberately omitted from `data` (left exactly at its
+  // existing null default) rather than ever invented.
   const finalStatus = outcome.kind === "success" ? ("SENT" as const) : ("SEND_FAILED" as const);
   const final = await db.rFQDispatch.updateMany({
     where: { id: validRfqDispatchId, tenantId: validTenantId, status: "SENDING" },
-    data: { status: finalStatus },
+    data:
+      outcome.kind === "success"
+        ? { status: finalStatus, providerMessageId: outcome.providerMessageId ?? null }
+        : { status: finalStatus },
   });
   if (final.count === 0) {
     throw new Error(

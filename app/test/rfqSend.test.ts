@@ -324,6 +324,69 @@ describe("sendRFQDispatch / retryRFQDispatch (service)", () => {
   });
 
   // ---------------------------------------------------------------
+  // providerMessageId persistence — RFQ-EP4 (docs/decisions/ratified.md):
+  // an opaque provider correlation identifier, persisted only alongside
+  // an explicit SUCCESS outcome, never invented for failure/unknown.
+  // ---------------------------------------------------------------
+  describe("providerMessageId persistence (RFQ-EP4)", () => {
+    it("success with a providerMessageId persists it on the RFQDispatch row", async () => {
+      fakeSender.setNextOutcome({ kind: "success", providerMessageId: "filter-abc.xyz-0" });
+      const dispatch = await freshPendingDispatch();
+      await rfqDispatchService.sendRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps);
+
+      const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(row.status).toBe("SENT");
+      expect(row.providerMessageId).toBe("filter-abc.xyz-0");
+      fakeSender.setNextOutcome({ kind: "success" }); // reset for subsequent tests
+    });
+
+    it("success without a providerMessageId leaves the column null — absence is never invented", async () => {
+      fakeSender.setNextOutcome({ kind: "success" });
+      const dispatch = await freshPendingDispatch();
+      await rfqDispatchService.sendRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps);
+
+      const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(row.status).toBe("SENT");
+      expect(row.providerMessageId).toBeNull();
+    });
+
+    it("explicit failure never persists a providerMessageId, even if one were somehow present on the outcome", async () => {
+      fakeSender.setNextOutcome({ kind: "failure", reason: "provider rejected" });
+      const dispatch = await freshPendingDispatch();
+      await rfqDispatchService.sendRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps);
+
+      const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(row.status).toBe("SEND_FAILED");
+      expect(row.providerMessageId).toBeNull();
+      fakeSender.setNextOutcome({ kind: "success" }); // reset for subsequent tests
+    });
+
+    it("unknown outcome never persists a providerMessageId and performs no final-state write at all", async () => {
+      fakeSender.setNextOutcome({ kind: "unknown" });
+      const dispatch = await freshPendingDispatch();
+      await rfqDispatchService.sendRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps);
+
+      const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(row.status).toBe("SENDING");
+      expect(row.providerMessageId).toBeNull();
+      fakeSender.setNextOutcome({ kind: "success" }); // reset for subsequent tests
+    });
+
+    it("retryRFQDispatch also persists a fresh providerMessageId on a successful retry, overwriting any prior value", async () => {
+      const dispatch = await rfqDispatchService.createRFQDispatch(tenantAId, sourcingEventAId, supplierAId);
+      await prisma.rFQDispatch.update({ where: { id: dispatch.id }, data: { status: "SEND_FAILED", providerMessageId: null } });
+
+      fakeSender.setNextOutcome({ kind: "success", providerMessageId: "retry-filter.def-1" });
+      await rfqDispatchService.retryRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps);
+
+      const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(row.status).toBe("SENT");
+      expect(row.providerMessageId).toBe("retry-filter.def-1");
+      fakeSender.setNextOutcome({ kind: "success" }); // reset for subsequent tests
+    });
+  });
+
+  // ---------------------------------------------------------------
   // Final-write internal-consistency detection
   // ---------------------------------------------------------------
   describe("final write internal consistency", () => {
@@ -516,6 +579,11 @@ describe("sendRFQDispatch / retryRFQDispatch (service)", () => {
       expect(oldAfter.responseTokenHash).toBe(oldBefore.responseTokenHash);
       expect(oldAfter.tokenExpiresAt?.getTime()).toBe(oldBefore.tokenExpiresAt?.getTime());
       expect(oldAfter.createdAt.getTime()).toBe(oldBefore.createdAt.getTime());
+      // RFQ-EP4 (docs/decisions/ratified.md) / adversarial review finding:
+      // providerMessageId was missing from this unchanged-field list —
+      // creating and sending an independent sibling dispatch must not
+      // touch it either, same as every other identity/token field above.
+      expect(oldAfter.providerMessageId).toBe(oldBefore.providerMessageId);
 
       const newRow = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: newDispatch.id } });
       expect(newRow.id).not.toBe(oldDispatch.id);
