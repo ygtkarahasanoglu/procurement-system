@@ -78,10 +78,10 @@ export async function getRequestLineWorkflow(tenantId: string, requestLineId: st
   const activeSourcingEvent = sourcingEvents.find((se) => se.status === "OPEN") ?? sourcingEvents.at(-1) ?? null;
 
   if (!activeSourcingEvent) {
-    return { requestLine, sourcingEvent: null, quoteVersions: [], recommendations: [], decisionPackages: [] };
+    return { requestLine, sourcingEvent: null, quoteVersions: [], recommendations: [], decisionPackages: [], rfqDispatches: [] };
   }
 
-  const [quoteVersions, recommendations, decisionPackages] = await Promise.all([
+  const [quoteVersions, recommendations, decisionPackages, rfqDispatches] = await Promise.all([
     db.quoteVersion.findMany({
       where: { tenantId: validTenantId, supplierQuote: { sourcingEventId: activeSourcingEvent.id } },
       include: { supplierQuote: { include: { supplier: true } } },
@@ -99,7 +99,26 @@ export async function getRequestLineWorkflow(tenantId: string, requestLineId: st
       },
       orderBy: { createdAt: "desc" },
     }),
+    // RFQ UI End-to-End V1: explicit `select` (not the default
+    // all-columns `include`) so a schema change elsewhere can never
+    // accidentally add responseTokenHash (or any other sensitive field)
+    // to what this read-only UI aggregate returns. tokenExpiresAt is
+    // deliberately omitted too — the UI has no genuine need to display
+    // it, and omitting it keeps this response to the minimum the
+    // internal workflow screen actually needs.
+    db.rFQDispatch.findMany({
+      where: { tenantId: validTenantId, sourcingEventId: activeSourcingEvent.id },
+      select: {
+        id: true,
+        supplierId: true,
+        status: true,
+        createdAt: true,
+        respondedAt: true,
+        supplier: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    }),
   ]);
 
-  return { requestLine, sourcingEvent: activeSourcingEvent, quoteVersions, recommendations, decisionPackages };
+  return { requestLine, sourcingEvent: activeSourcingEvent, quoteVersions, recommendations, decisionPackages, rfqDispatches };
 }

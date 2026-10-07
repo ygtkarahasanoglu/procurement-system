@@ -20,6 +20,7 @@ import { assertTenantMatches } from "./tenantBinding";
 import { createAuthRouter } from "./authRoutes";
 import { sessionAuthenticator } from "./sessionAuthenticator";
 import { unconfiguredEmailSender } from "./emailSender";
+import { createDevEmailSender } from "./devEmailSender";
 
 // Default RFQ SEND dependencies for every existing/future createApp()
 // caller that does not explicitly inject its own (every existing test
@@ -135,6 +136,19 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
   app.post(
     "/rfq-responses/:token",
     wrap((req) => rfqDispatchService.submitSupplierResponse(req.params.token, req.body))
+  );
+
+  // RFQ UI End-to-End V1. Read-only counterpart to the POST above, for
+  // the supplier-facing form to show what it's quoting against before
+  // submitting — same unauthenticated carve-out, same reasoning, mounted
+  // immediately alongside it. Never consumes the token (no respondedAt
+  // write, no status write) — getSupplierResponseContext performs no
+  // mutation at all. Uses the identical generic-rejection semantics as
+  // the POST (RFQ-R2/R3): an invalid, expired, or already-consumed token
+  // all produce the same NotFoundError, never a distinguishing signal.
+  app.get(
+    "/rfq-responses/:token",
+    wrap((req) => rfqDispatchService.getSupplierResponseContext(req.params.token))
   );
 
   // Authentication boundary (AUTH-1/2/3/5/6 planning, Step 4). Invokes the
@@ -388,6 +402,35 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
     )
   );
 
+  // RFQ UI End-to-End V1. Wires the existing createRFQDispatch service
+  // (unchanged) to HTTP for the first time — no route previously existed
+  // for it. Same pattern as /rfq-dispatches/:id/send below: tenantId
+  // comes exclusively from req.principal, never from the request body, so
+  // there is no client-supplied tenantId to validate (no
+  // assertTenantMatches call, same reasoning as GET /tenants above).
+  // createRFQDispatch itself applies no role-based authorization gate
+  // (deliberately, per its own comment — it mirrors
+  // sourcingService.createSourcingEvent/quoteService.submitQuote's
+  // ungated "prepare" tier) and this route does not add one either, for
+  // the same consistency reason.
+  app.post(
+    "/rfq-dispatches",
+    wrap(async (req) => {
+      const dispatch = await rfqDispatchService.createRFQDispatch(
+        req.principal!.tenantId,
+        req.body.sourcingEventId,
+        req.body.supplierId
+      );
+      // Defense-in-depth: createRFQDispatch's own return shape is
+      // unchanged (responseTokenHash/tokenExpiresAt are always null at
+      // this point — no token has been issued yet), but this route never
+      // forwards those field names over the wire at all, consistent with
+      // the same minimal-exposure discipline applied to the workflow GET
+      // (queryService.getRequestLineWorkflow).
+      return { id: dispatch.id, sourcingEventId: dispatch.sourcingEventId, supplierId: dispatch.supplierId, status: dispatch.status, createdAt: dispatch.createdAt };
+    })
+  );
+
   // RFQ-S1/RFQ-S2 (docs/decisions/ratified.md). No client-supplied
   // tenantId/actorUserId/role — both come exclusively from req.principal,
   // exactly like /sourcing-events and /recommendations above. No
@@ -431,7 +474,26 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
 // email, role, or any other identity concept enters Principal; the
 // authentication middleware above and every existing route are otherwise
 // completely unchanged by this swap.
-const app = createApp(sessionAuthenticator);
+// RFQ UI End-to-End V1: strictly opt-in development/demo email capture.
+// Unset (the default, and the only configuration any real deployment
+// should ever use) leaves `app` wired exactly as before — createApp's own
+// DEFAULT_SEND_DEPS (unconfiguredEmailSender), untouched. Only an
+// operator explicitly setting RFQ_DEV_EMAIL_CAPTURE=1 in their own local
+// environment activates this; it cannot be reached by any request, and
+// selects no real email provider (provider selection remains OPEN,
+// docs/decisions/open.md). The onCapture callback here is a dedicated,
+// explicitly-labeled, dev-only output — never the shared console.error
+// error-handling path used elsewhere in this file — and only ever prints
+// anything when this opt-in branch is active.
+const app =
+  process.env.RFQ_DEV_EMAIL_CAPTURE === "1"
+    ? createApp(sessionAuthenticator, {
+        emailSender: createDevEmailSender((email) => {
+          console.log(`[DEV EMAIL CAPTURE] To: ${email.to}\nSubject: ${email.subject}\n\n${email.body}\n`);
+        }).sender,
+        responseBaseUrl: process.env.RFQ_RESPONSE_BASE_URL ?? "http://localhost:5173",
+      })
+    : createApp(sessionAuthenticator);
 
 const port = process.env.PORT ? Number(process.env.PORT) : 3000;
 if (require.main === module) {

@@ -261,6 +261,58 @@ export async function sendRFQDispatch(
   return { status: finalStatus };
 }
 
+// RFQ UI End-to-End V1 — read-only counterpart to submitSupplierResponse
+// below, for a supplier-facing form to show what it's quoting against
+// before submitting. Deliberately a separate function, not a shared
+// helper with submitSupplierResponse, so this addition cannot alter that
+// function's own already-ratified behavior (RFQ-R1-R5) — the ~10 lines
+// of token-resolution/usability-check duplication is accepted
+// deliberately in exchange for that isolation.
+//
+// Never mutates: no $transaction, no update of any kind. respondedAt,
+// tokenExpiresAt, and status are read, never written, here.
+//
+// Uses the exact same generic-rejection condition as submitSupplierResponse
+// (nonexistent/expired/already-consumed all indistinguishable) — this
+// does not introduce a new "already responded" UI state/policy; a token
+// that could no longer be POSTed also cannot be GET-ed, for the same
+// reason, mirroring RFQ-R2/R3's existing discipline exactly rather than
+// inventing a new one.
+//
+// Returns the minimum the supplier is already entitled to see by virtue
+// of holding the token (the same product/quantity/unit the composed
+// email already discloses in plain text) — never tenantId, supplierId,
+// sourcingEventId, requestLineId, or responseTokenHash.
+export async function getSupplierResponseContext(rawToken: string) {
+  const validRawToken = requireNonEmptyString(rawToken, "token");
+
+  const tokenHash = hashToken(validRawToken);
+  const dispatch = await prisma.rFQDispatch.findUnique({
+    where: { responseTokenHash: tokenHash },
+    include: { sourcingEvent: { include: { requestLine: { include: { product: true } } } } },
+  });
+
+  const tokenIsUsable =
+    dispatch !== null && dispatch.respondedAt === null && dispatch.tokenExpiresAt !== null && dispatch.tokenExpiresAt > new Date();
+  if (!dispatch || !tokenIsUsable) {
+    throw new NotFoundError("RFQDispatch", "token");
+  }
+
+  // Defense-in-depth tenant invariant — same discipline as
+  // submitSupplierResponse below, for the same reason (bare prisma,
+  // unauthenticated boundary, real external reader).
+  if (dispatch.tenantId !== dispatch.sourcingEvent.tenantId || dispatch.tenantId !== dispatch.sourcingEvent.requestLine.tenantId) {
+    throw new Error(`Internal inconsistency: RFQDispatch ${dispatch.id}'s related data does not all belong to tenant ${dispatch.tenantId}.`);
+  }
+
+  const requestLine = dispatch.sourcingEvent.requestLine;
+  return {
+    productName: requestLine.product.name,
+    requestedQuantity: requestLine.requestedQuantity.toString(),
+    unit: requestLine.unit,
+  };
+}
+
 // Supplier Response / Quote Ingestion V1 — RFQ-R1 through RFQ-R5
 // (docs/decisions/ratified.md). The only client-supplied identifier is
 // the opaque raw token itself (RFQ-R2); every other field a submission

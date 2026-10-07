@@ -9,6 +9,8 @@ import type {
   QuoteVersion,
   RecommendationRecord,
   RequestLineWorkflow,
+  RFQDispatch,
+  RfqResponseContext,
   SourcingEvent,
   Supplier,
   Tenant,
@@ -147,4 +149,25 @@ export const api = {
 
   createPurchaseOrder: (tenantId: string, approvalId: string, actingUserId: string) =>
     post<PurchaseOrder>("/purchase-orders", { tenantId, approvalId, actingUserId }),
+
+  // RFQ UI End-to-End V1. tenantId/actorUserId are never sent — both
+  // routes derive them exclusively from the session-authenticated
+  // Principal server-side (server.ts), exactly like /rfq-dispatches/:id/send
+  // already did before this addition.
+  createRFQDispatch: (sourcingEventId: string, supplierId: string) =>
+    post<RFQDispatch>("/rfq-dispatches", { sourcingEventId, supplierId }),
+
+  sendRFQDispatch: (rfqDispatchId: string) => post<{ status: string }>(`/rfq-dispatches/${rfqDispatchId}/send`, {}),
+
+  // Principal-free — the opaque token in the path is the sole
+  // identifier, exactly mirroring the backend's own unauthenticated
+  // carve-out (RFQ-R1-R5). Never sends/receives a session cookie's worth
+  // of meaningful data; `credentials: "include"` on `request()` above is
+  // harmless here since no cookie exists for a supplier's browser.
+  getRfqResponseContext: (token: string) => get<RfqResponseContext>(`/rfq-responses/${encodeURIComponent(token)}`),
+
+  submitRfqResponse: (
+    token: string,
+    input: { quantity: number; unit: string; unitPrice: number; currency: string }
+  ) => post<{ id: string }>(`/rfq-responses/${encodeURIComponent(token)}`, input),
 };

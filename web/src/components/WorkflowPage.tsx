@@ -30,6 +30,7 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
   const [busy, setBusy] = useState(false);
   const [selectedQuoteVersionId, setSelectedQuoteVersionId] = useState("");
   const [selectedQuantity, setSelectedQuantity] = useState("");
+  const [rfqSupplierId, setRfqSupplierId] = useState("");
 
   const reload = useCallback(() => {
     api.getWorkflow(tenantId, requestLineId).then(setData).catch(onError);
@@ -41,7 +42,7 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
 
   if (!data) return <p>Loading…</p>;
 
-  const { requestLine, sourcingEvent, quoteVersions, recommendations, decisionPackages } = data;
+  const { requestLine, sourcingEvent, quoteVersions, recommendations, decisionPackages, rfqDispatches } = data;
   const latestRecommendation = recommendations[0] ?? null;
   const currentDecision = decisionPackages[0] ?? null;
   const currentApproval = currentDecision?.approvals[0] ?? null;
@@ -96,6 +97,67 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
           </button>
         )}
       </section>
+
+      {/* RFQ UI End-to-End V1: electronic RFQ dispatch, parallel to the
+          manual quote entry below — this section holds no business
+          rule itself, same discipline as every other section here. */}
+      {sourcingEvent && (
+        <section className="panel">
+          <h3>Request for Quote (RFQ)</h3>
+          {rfqDispatches.length > 0 && (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Supplier</th>
+                  <th>Status</th>
+                  <th>Sent</th>
+                  <th>Responded</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rfqDispatches.map((d) => (
+                  <tr key={d.id}>
+                    <td>{d.supplier.name}</td>
+                    <td>
+                      <span className="badge">{d.status}</span>
+                    </td>
+                    <td>{new Date(d.createdAt).toLocaleString()}</td>
+                    <td>{d.respondedAt ? new Date(d.respondedAt).toLocaleString() : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div className="decision-form rfq-send-form">
+            <select value={rfqSupplierId} onChange={(e) => setRfqSupplierId(e.target.value)}>
+              <option value="">Supplier…</option>
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="btn btn--primary"
+              disabled={busy || !rfqSupplierId}
+              onClick={() =>
+                runAction(async () => {
+                  const dispatch = await api.createRFQDispatch(sourcingEvent.id, rfqSupplierId);
+                  await api.sendRFQDispatch(dispatch.id);
+                  setRfqSupplierId("");
+                })
+              }
+            >
+              Send RFQ
+            </button>
+          </div>
+          <p className="panel-hint">
+            No real email provider is configured yet (provider selection remains an open decision) — SEND_FAILED is
+            expected until one is selected. This does not block the manual quote entry below.
+          </p>
+        </section>
+      )}
 
       {/* 2. Quotes */}
       {sourcingEvent && (

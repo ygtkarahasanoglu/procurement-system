@@ -274,6 +274,85 @@ describe("submitSupplierResponse (service)", () => {
 });
 
 // ---------------------------------------------------------------
+// RFQ UI End-to-End V1 — getSupplierResponseContext (read-only). Never
+// mutates respondedAt/status; uses the identical generic-rejection
+// condition as submitSupplierResponse (RFQ-R2/R3), so a token that could
+// no longer be POSTed also cannot be GET-ed — no new "already responded"
+// policy is introduced.
+// ---------------------------------------------------------------
+describe("getSupplierResponseContext (service)", () => {
+  let tenantId: string;
+  let supplierId: string;
+  let sourcingEventId: string;
+  const productName = "SupplierContext Product";
+
+  beforeAll(async () => {
+    const tenant = await prisma.tenant.create({ data: { name: "SupplierContext Tenant" } });
+    tenantId = tenant.id;
+    supplierId = (
+      await prisma.supplier.create({ data: { tenantId, name: "SupplierContext Supplier", email: "ctx@example.com" } })
+    ).id;
+    const user = await prisma.user.create({ data: { tenantId, name: "SupplierContext User", role: "procurement_user" } });
+    const product = await prisma.product.create({ data: { tenantId, name: productName, sku: "SC-SKU" } });
+    const request = await prisma.procurementRequest.create({ data: { tenantId, createdById: user.id } });
+    const line = await prisma.requestLine.create({
+      data: { tenantId, requestId: request.id, productId: product.id, requestedQuantity: "42", unit: "KG" },
+    });
+    sourcingEventId = (await prisma.sourcingEvent.create({ data: { tenantId, requestLineId: line.id } })).id;
+  });
+
+  async function freshToken() {
+    const dispatch = await rfqDispatchService.createRFQDispatch(tenantId, sourcingEventId, supplierId);
+    const { rawToken } = await rfqDispatchService.issueResponseToken(tenantId, dispatch.id);
+    return { dispatch, rawToken };
+  }
+
+  it("returns exactly the display fields for a valid, usable token", async () => {
+    const { rawToken } = await freshToken();
+    const context = await rfqDispatchService.getSupplierResponseContext(rawToken);
+    expect(context).toEqual({ productName, requestedQuantity: "42", unit: "KG" });
+  });
+
+  it("never mutates the dispatch — respondedAt stays null, status stays PENDING", async () => {
+    const { dispatch, rawToken } = await freshToken();
+    await rfqDispatchService.getSupplierResponseContext(rawToken);
+    const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+    expect(row.respondedAt).toBeNull();
+    expect(row.status).toBe("PENDING");
+  });
+
+  it("the same token can be read repeatedly without consuming it", async () => {
+    const { rawToken } = await freshToken();
+    await rfqDispatchService.getSupplierResponseContext(rawToken);
+    await rfqDispatchService.getSupplierResponseContext(rawToken);
+    const context = await rfqDispatchService.getSupplierResponseContext(rawToken);
+    expect(context.productName).toBe(productName);
+  });
+
+  it("rejects a nonexistent token with NotFoundError", async () => {
+    await expect(rfqDispatchService.getSupplierResponseContext(randomUUID())).rejects.toThrow(NotFoundError);
+  });
+
+  it("rejects an expired token with the identical NotFoundError — no enumeration signal", async () => {
+    const { dispatch, rawToken } = await freshToken();
+    await prisma.rFQDispatch.update({ where: { id: dispatch.id }, data: { tokenExpiresAt: new Date(Date.now() - 1000) } });
+    await expect(rfqDispatchService.getSupplierResponseContext(rawToken)).rejects.toThrow(NotFoundError);
+  });
+
+  it("rejects an already-consumed token with the identical NotFoundError", async () => {
+    const { rawToken } = await freshToken();
+    await rfqDispatchService.submitSupplierResponse(rawToken, { quantity: "1", unit: "EA", unitPrice: "1", currency: "USD" });
+    await expect(rfqDispatchService.getSupplierResponseContext(rawToken)).rejects.toThrow(NotFoundError);
+  });
+
+  it("never returns tenantId, supplierId, sourcingEventId, or any other internal identifier", async () => {
+    const { rawToken } = await freshToken();
+    const context = (await rfqDispatchService.getSupplierResponseContext(rawToken)) as Record<string, unknown>;
+    expect(Object.keys(context).sort()).toEqual(["productName", "requestedQuantity", "unit"]);
+  });
+});
+
+// ---------------------------------------------------------------
 // HTTP boundary — unauthenticated, Principal-free
 // ---------------------------------------------------------------
 describe("POST /rfq-responses/:token (HTTP)", () => {
@@ -348,5 +427,31 @@ describe("POST /rfq-responses/:token (HTTP)", () => {
   it("rejects an invalid token over HTTP with a generic not-found-equivalent response", async () => {
     const res = await httpPost(`/rfq-responses/${randomUUID()}`, { quantity: "1", unit: "EA", unitPrice: "1", currency: "USD" });
     expect(res.status).toBe(404);
+  });
+
+  it("GET returns the display context for a valid token with no authentication required", async () => {
+    const dispatch = await rfqDispatchService.createRFQDispatch(tenantId, sourcingEventId, supplierId);
+    const { rawToken } = await rfqDispatchService.issueResponseToken(tenantId, dispatch.id);
+
+    const res = await fetch(`${baseUrl}/rfq-responses/${rawToken}`);
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toHaveProperty("productName");
+    expect(json).toHaveProperty("requestedQuantity");
+    expect(json).toHaveProperty("unit");
+  });
+
+  it("GET rejects an invalid token with the same generic not-found-equivalent response as POST", async () => {
+    const res = await fetch(`${baseUrl}/rfq-responses/${randomUUID()}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("GET does not consume the token — a subsequent POST against the same token still succeeds", async () => {
+    const dispatch = await rfqDispatchService.createRFQDispatch(tenantId, sourcingEventId, supplierId);
+    const { rawToken } = await rfqDispatchService.issueResponseToken(tenantId, dispatch.id);
+
+    await fetch(`${baseUrl}/rfq-responses/${rawToken}`);
+    const res = await httpPost(`/rfq-responses/${rawToken}`, { quantity: "1", unit: "EA", unitPrice: "1", currency: "USD" });
+    expect(res.status).toBe(200);
   });
 });

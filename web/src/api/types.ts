@@ -141,12 +141,32 @@ export interface PurchaseOrder {
   createdAt: string;
 }
 
+/** Display-only fields — responseTokenHash/tokenExpiresAt are never
+ * returned by the backend for this shape (queryService.getRequestLineWorkflow). */
+export interface RFQDispatch {
+  id: string;
+  supplierId: string;
+  supplier: { id: string; name: string };
+  status: string;
+  createdAt: string;
+  respondedAt: string | null;
+}
+
 export interface RequestLineWorkflow {
   requestLine: RequestLine & { request: ProcurementRequest };
   sourcingEvent: SourcingEvent | null;
   quoteVersions: QuoteVersion[];
   recommendations: RecommendationRecord[];
   decisionPackages: DecisionPackage[];
+  rfqDispatches: RFQDispatch[];
+}
+
+/** Returned by GET /rfq-responses/:token — exactly what a supplier needs
+ * to see before submitting, never tenantId/supplierId/sourcingEventId. */
+export interface RfqResponseContext {
+  productName: string;
+  requestedQuantity: string;
+  unit: string;
 }
 
 export interface ApiErrorBody {

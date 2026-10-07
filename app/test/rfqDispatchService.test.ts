@@ -2,10 +2,13 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { createServer, type Server } from "node:http";
 import { prisma, tenantScoped, TenantGuardRejection } from "../src/db/client";
 import * as rfqDispatchService from "../src/services/rfqDispatchService";
 import { NotFoundError } from "../src/domain/errors";
 import { hashToken, generateRawToken } from "../src/api/rfqResponseToken";
+import { createApp } from "../src/api/server";
+import { testAuthenticator, TEST_USER_ID_HEADER, TEST_TENANT_ID_HEADER } from "./support/testAuthenticator";
 
 // RFQ Batch 2 — the internal, tenant-scoped RFQDispatch domain service.
 // Prepare/create side only (SEC-014): no token generation, no email, no
@@ -307,5 +310,159 @@ describe("RFQDispatch domain service — issueResponseToken (Batch 3 — issuanc
   it("routes through tenantScoped(), not the bare prisma client, for the update itself", async () => {
     const source = await readFile(join(__dirname, "../src/services/rfqDispatchService.ts"), "utf-8");
     expect(source).not.toMatch(/\bprisma\.rFQDispatch\.updateMany/);
+  });
+});
+
+// ---------------------------------------------------------------
+// RFQ UI End-to-End V1 — POST /rfq-dispatches (HTTP), the first HTTP
+// route for createRFQDispatch (unchanged service logic, just wired),
+// plus the new rfqDispatches field on GET /request-lines/:id/workflow
+// (queryService.getRequestLineWorkflow).
+// ---------------------------------------------------------------
+describe("POST /rfq-dispatches (HTTP) + workflow visibility", () => {
+  let httpServer: Server;
+  let baseUrl: string;
+  let tenantId: string;
+  let otherTenantId: string;
+  let userId: string;
+  let supplierId: string;
+  let otherTenantSupplierId: string;
+  let sourcingEventId: string;
+  let otherTenantSourcingEventId: string;
+  let requestLineId: string;
+
+  function authHeaders(uid: string, tid: string): Record<string, string> {
+    return { [TEST_USER_ID_HEADER]: uid, [TEST_TENANT_ID_HEADER]: tid };
+  }
+
+  async function httpPost(path: string, body: unknown, headers: Record<string, string> | null) {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(headers ?? {}) },
+      body: JSON.stringify(body ?? {}),
+    });
+    let json: unknown = null;
+    try {
+      json = await res.json();
+    } catch {
+      // no body
+    }
+    return { status: res.status, json };
+  }
+
+  async function httpGet(path: string, headers: Record<string, string> | null) {
+    const res = await fetch(`${baseUrl}${path}`, { method: "GET", headers: headers ?? {} });
+    let json: unknown = null;
+    try {
+      json = await res.json();
+    } catch {
+      // no body
+    }
+    return { status: res.status, json };
+  }
+
+  beforeAll(async () => {
+    await new Promise<void>((resolve) => {
+      httpServer = createServer(createApp(testAuthenticator));
+      httpServer.listen(0, () => {
+        const address = httpServer.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        baseUrl = `http://127.0.0.1:${port}`;
+        resolve();
+      });
+    });
+
+    const tenant = await prisma.tenant.create({ data: { name: "RFQDispatch HTTP Tenant" } });
+    tenantId = tenant.id;
+    const otherTenant = await prisma.tenant.create({ data: { name: "RFQDispatch HTTP Other Tenant" } });
+    otherTenantId = otherTenant.id;
+
+    userId = (await prisma.user.create({ data: { tenantId, name: "RFQDispatch HTTP User", role: "procurement_user" } })).id;
+    supplierId = (await prisma.supplier.create({ data: { tenantId, name: "RFQDispatch HTTP Supplier" } })).id;
+    otherTenantSupplierId = (
+      await prisma.supplier.create({ data: { tenantId: otherTenantId, name: "RFQDispatch HTTP Other Supplier" } })
+    ).id;
+
+    const product = await prisma.product.create({ data: { tenantId, name: "RFQDispatch HTTP Product", sku: "RFQDH-SKU" } });
+    const request = await prisma.procurementRequest.create({ data: { tenantId, createdById: userId } });
+    const line = await prisma.requestLine.create({
+      data: { tenantId, requestId: request.id, productId: product.id, requestedQuantity: "1", unit: "EA" },
+    });
+    requestLineId = line.id;
+    sourcingEventId = (await prisma.sourcingEvent.create({ data: { tenantId, requestLineId: line.id } })).id;
+
+    const otherUser = await prisma.user.create({
+      data: { tenantId: otherTenantId, name: "RFQDispatch HTTP Other User", role: "procurement_user" },
+    });
+    const otherProduct = await prisma.product.create({
+      data: { tenantId: otherTenantId, name: "RFQDispatch HTTP Other Product", sku: "RFQDH-OSKU" },
+    });
+    const otherRequest = await prisma.procurementRequest.create({ data: { tenantId: otherTenantId, createdById: otherUser.id } });
+    const otherLine = await prisma.requestLine.create({
+      data: { tenantId: otherTenantId, requestId: otherRequest.id, productId: otherProduct.id, requestedQuantity: "1", unit: "EA" },
+    });
+    otherTenantSourcingEventId = (
+      await prisma.sourcingEvent.create({ data: { tenantId: otherTenantId, requestLineId: otherLine.id } })
+    ).id;
+  });
+
+  it("an unauthenticated request cannot create a dispatch", async () => {
+    const res = await httpPost("/rfq-dispatches", { sourcingEventId, supplierId }, null);
+    expect(res.status).toBe(401);
+  });
+
+  it("creates a dispatch for the authenticated principal's own tenant, and never returns responseTokenHash/tokenExpiresAt", async () => {
+    const res = await httpPost("/rfq-dispatches", { sourcingEventId, supplierId }, authHeaders(userId, tenantId));
+    expect(res.status).toBe(200);
+    const body = res.json as Record<string, unknown>;
+    expect(body.sourcingEventId).toBe(sourcingEventId);
+    expect(body.supplierId).toBe(supplierId);
+    expect(body.status).toBe("PENDING");
+    expect(body).not.toHaveProperty("responseTokenHash");
+    expect(body).not.toHaveProperty("tokenExpiresAt");
+  });
+
+  it("ignores a client-supplied tenantId in the body — the dispatch is always created under the authenticated principal's own tenant", async () => {
+    const res = await httpPost(
+      "/rfq-dispatches",
+      { sourcingEventId, supplierId, tenantId: otherTenantId },
+      authHeaders(userId, tenantId)
+    );
+    expect(res.status).toBe(200);
+    const dispatch = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: (res.json as { id: string }).id } });
+    expect(dispatch.tenantId).toBe(tenantId);
+  });
+
+  it("rejects a cross-tenant sourcingEvent", async () => {
+    const res = await httpPost(
+      "/rfq-dispatches",
+      { sourcingEventId: otherTenantSourcingEventId, supplierId },
+      authHeaders(userId, tenantId)
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a cross-tenant supplier", async () => {
+    const res = await httpPost(
+      "/rfq-dispatches",
+      { sourcingEventId, supplierId: otherTenantSupplierId },
+      authHeaders(userId, tenantId)
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("the workflow GET exposes created dispatches with display fields, but never responseTokenHash/tokenExpiresAt", async () => {
+    const createRes = await httpPost("/rfq-dispatches", { sourcingEventId, supplierId }, authHeaders(userId, tenantId));
+    const dispatchId = (createRes.json as { id: string }).id;
+
+    const res = await httpGet(`/request-lines/${requestLineId}/workflow?tenantId=${tenantId}`, authHeaders(userId, tenantId));
+    expect(res.status).toBe(200);
+    const body = res.json as { rfqDispatches: Record<string, unknown>[] };
+    const found = body.rfqDispatches.find((d) => d.id === dispatchId);
+    expect(found).toBeDefined();
+    expect(found).toMatchObject({ supplierId, status: "PENDING" });
+    expect(found!.supplier).toMatchObject({ id: supplierId });
+    expect(found).not.toHaveProperty("responseTokenHash");
+    expect(found).not.toHaveProperty("tokenExpiresAt");
   });
 });
