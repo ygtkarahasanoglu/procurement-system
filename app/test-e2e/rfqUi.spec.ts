@@ -152,4 +152,253 @@ test.describe("RFQ UI End-to-End V1", () => {
     const text = await page.locator(".app-main").textContent();
     expect(text).not.toMatch(/at Object\.|node_modules|PrismaClient|NotFoundError/);
   });
+
+  // RFQ-RT1-RFQ-RT5 (docs/decisions/ratified.md) — same-dispatch retry
+  // and new-dispatch resend UI semantics. Each test forces the specific
+  // dispatch state it needs via Prisma directly, mirroring this file's
+  // own existing issueResponseToken precedent (above): the real SEND
+  // outcome against whichever EmailSender this environment happens to
+  // have configured is not relied on to produce a deterministic starting
+  // state, only the terminal outcome of an actual click is ever left
+  // unassumed.
+  async function reopenWorkflow(page: import("@playwright/test").Page, quantityText: string) {
+    await page.getByRole("button", { name: "← Back to requests" }).click();
+    // Matches the Requested Qty cell's exact text, not a substring of the
+    // row — the Request/Line columns render truncated hex UUID fragments
+    // (RequestList.tsx), which can otherwise coincidentally contain the
+    // same two digits as a quantity used here.
+    await page
+      .locator(".data-table tbody tr")
+      .filter({ has: page.locator("td", { hasText: new RegExp(`^${quantityText}$`) }) })
+      .getByRole("button", { name: "Open workflow →" })
+      .click();
+  }
+
+  test("Retry: a SEND_FAILED dispatch shows Retry, and clicking it continues the same dispatch's lifecycle", async ({ page }) => {
+    await page.goto("/");
+    await page.getByLabel("Product").selectOption({ label: "RFQ UI Product (RFQUI-SKU)" });
+    await page.locator(".panel").filter({ hasText: "New Procurement Request" }).getByLabel("Quantity").fill("61");
+    await page.getByLabel("Unit").fill("EA");
+    await page.getByRole("button", { name: "Create Request" }).click();
+    await page.getByRole("button", { name: "Open Sourcing Event" }).click();
+
+    let rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+    await rfqSection.locator(".rfq-send-form select").selectOption({ label: "RFQ UI Supplier" });
+    await rfqSection.getByRole("button", { name: "Send RFQ" }).click();
+    await expect(rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" })).toBeVisible();
+
+    const dispatch = await prisma.rFQDispatch.findFirstOrThrow({
+      where: { tenantId, supplierId },
+      orderBy: { createdAt: "desc" },
+    });
+    await prisma.rFQDispatch.update({ where: { id: dispatch.id }, data: { status: "SEND_FAILED" } });
+
+    await reopenWorkflow(page, "61");
+    rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+    const row = rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" });
+    await expect(row.locator(".badge")).toHaveText("SEND_FAILED");
+
+    const retryButton = row.getByRole("button", { name: "Retry" });
+    await expect(retryButton).toBeVisible();
+    await retryButton.click();
+
+    await expect(row).toBeVisible();
+    const statusText = (await row.locator(".badge").textContent())?.trim();
+    expect(["SENT", "SEND_FAILED"]).toContain(statusText);
+
+    // Same dispatch id throughout — retry never creates a second row.
+    const totalForSupplier = await prisma.rFQDispatch.count({
+      where: { tenantId, supplierId, sourcingEventId: dispatch.sourcingEventId },
+    });
+    expect(totalForSupplier).toBe(1);
+  });
+
+  test("Retry: a SENDING dispatch never shows a Retry action", async ({ page }) => {
+    await page.goto("/");
+    await page.getByLabel("Product").selectOption({ label: "RFQ UI Product (RFQUI-SKU)" });
+    await page.locator(".panel").filter({ hasText: "New Procurement Request" }).getByLabel("Quantity").fill("62");
+    await page.getByLabel("Unit").fill("EA");
+    await page.getByRole("button", { name: "Create Request" }).click();
+    await page.getByRole("button", { name: "Open Sourcing Event" }).click();
+
+    let rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+    await rfqSection.locator(".rfq-send-form select").selectOption({ label: "RFQ UI Supplier" });
+    await rfqSection.getByRole("button", { name: "Send RFQ" }).click();
+    await expect(rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" })).toBeVisible();
+
+    const dispatch = await prisma.rFQDispatch.findFirstOrThrow({
+      where: { tenantId, supplierId },
+      orderBy: { createdAt: "desc" },
+    });
+    await prisma.rFQDispatch.update({ where: { id: dispatch.id }, data: { status: "SENDING" } });
+
+    await reopenWorkflow(page, "62");
+    rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+    const row = rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" });
+    await expect(row.locator(".badge")).toHaveText("SENDING");
+    await expect(row.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  });
+
+  test("Resend: selecting a supplier with a SENDING dispatch shows a blocking duplicate-risk confirmation; Cancel makes no API calls and leaves dispatches unchanged", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByLabel("Product").selectOption({ label: "RFQ UI Product (RFQUI-SKU)" });
+    await page.locator(".panel").filter({ hasText: "New Procurement Request" }).getByLabel("Quantity").fill("63");
+    await page.getByLabel("Unit").fill("EA");
+    await page.getByRole("button", { name: "Create Request" }).click();
+    await page.getByRole("button", { name: "Open Sourcing Event" }).click();
+
+    let rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+    await rfqSection.locator(".rfq-send-form select").selectOption({ label: "RFQ UI Supplier" });
+    await rfqSection.getByRole("button", { name: "Send RFQ" }).click();
+    await expect(rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" })).toBeVisible();
+
+    const dispatch = await prisma.rFQDispatch.findFirstOrThrow({
+      where: { tenantId, supplierId },
+      orderBy: { createdAt: "desc" },
+    });
+    await prisma.rFQDispatch.update({ where: { id: dispatch.id }, data: { status: "SENDING" } });
+
+    await reopenWorkflow(page, "63");
+    rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+
+    const beforeCount = await prisma.rFQDispatch.count({ where: { tenantId, supplierId, sourcingEventId: dispatch.sourcingEventId } });
+
+    let dialogMessage = "";
+    page.once("dialog", async (dialog) => {
+      dialogMessage = dialog.message();
+      await dialog.dismiss();
+    });
+    await rfqSection.locator(".rfq-send-form select").selectOption({ label: "RFQ UI Supplier" });
+    await rfqSection.getByRole("button", { name: "Send RFQ" }).click();
+
+    await expect.poll(() => dialogMessage).not.toBe("");
+    expect(dialogMessage).toMatch(/SENDING/);
+    expect(dialogMessage).toMatch(/duplicate/i);
+
+    const afterCount = await prisma.rFQDispatch.count({ where: { tenantId, supplierId, sourcingEventId: dispatch.sourcingEventId } });
+    expect(afterCount).toBe(beforeCount);
+    const unchangedOriginal = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+    expect(unchangedOriginal.status).toBe("SENDING");
+  });
+
+  test("Resend: Continue on the duplicate-risk confirmation creates a new, independent RFQDispatch and sends it, leaving the old SENDING row unchanged", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByLabel("Product").selectOption({ label: "RFQ UI Product (RFQUI-SKU)" });
+    await page.locator(".panel").filter({ hasText: "New Procurement Request" }).getByLabel("Quantity").fill("64");
+    await page.getByLabel("Unit").fill("EA");
+    await page.getByRole("button", { name: "Create Request" }).click();
+    await page.getByRole("button", { name: "Open Sourcing Event" }).click();
+
+    let rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+    await rfqSection.locator(".rfq-send-form select").selectOption({ label: "RFQ UI Supplier" });
+    await rfqSection.getByRole("button", { name: "Send RFQ" }).click();
+    await expect(rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" })).toBeVisible();
+
+    const originalDispatch = await prisma.rFQDispatch.findFirstOrThrow({
+      where: { tenantId, supplierId },
+      orderBy: { createdAt: "desc" },
+    });
+    await prisma.rFQDispatch.update({ where: { id: originalDispatch.id }, data: { status: "SENDING" } });
+
+    await reopenWorkflow(page, "64");
+    rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+
+    page.once("dialog", async (dialog) => {
+      await dialog.accept();
+    });
+    await rfqSection.locator(".rfq-send-form select").selectOption({ label: "RFQ UI Supplier" });
+    await rfqSection.getByRole("button", { name: "Send RFQ" }).click();
+
+    await expect(rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" })).toHaveCount(2);
+
+    const unchangedOriginal = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: originalDispatch.id } });
+    expect(unchangedOriginal.status).toBe("SENDING");
+
+    const allForSupplier = await prisma.rFQDispatch.findMany({
+      where: { tenantId, supplierId, sourcingEventId: originalDispatch.sourcingEventId },
+    });
+    expect(allForSupplier).toHaveLength(2);
+    const newDispatch = allForSupplier.find((d) => d.id !== originalDispatch.id);
+    expect(newDispatch).toBeDefined();
+    expect(["PENDING", "SENDING", "SENT", "SEND_FAILED"]).toContain(newDispatch!.status);
+  });
+
+  test("Resend: no mandatory confirmation when the supplier's only existing dispatch is SEND_FAILED (not SENDING)", async ({ page }) => {
+    await page.goto("/");
+    await page.getByLabel("Product").selectOption({ label: "RFQ UI Product (RFQUI-SKU)" });
+    await page.locator(".panel").filter({ hasText: "New Procurement Request" }).getByLabel("Quantity").fill("65");
+    await page.getByLabel("Unit").fill("EA");
+    await page.getByRole("button", { name: "Create Request" }).click();
+    await page.getByRole("button", { name: "Open Sourcing Event" }).click();
+
+    let rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+    await rfqSection.locator(".rfq-send-form select").selectOption({ label: "RFQ UI Supplier" });
+    await rfqSection.getByRole("button", { name: "Send RFQ" }).click();
+    await expect(rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" })).toBeVisible();
+
+    const dispatch = await prisma.rFQDispatch.findFirstOrThrow({
+      where: { tenantId, supplierId },
+      orderBy: { createdAt: "desc" },
+    });
+    await prisma.rFQDispatch.update({ where: { id: dispatch.id }, data: { status: "SEND_FAILED" } });
+
+    await reopenWorkflow(page, "65");
+    rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+
+    let dialogFired = false;
+    page.on("dialog", async (dialog) => {
+      dialogFired = true;
+      await dialog.dismiss();
+    });
+
+    await rfqSection.locator(".rfq-send-form select").selectOption({ label: "RFQ UI Supplier" });
+    await rfqSection.getByRole("button", { name: "Send RFQ" }).click();
+
+    await expect(rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" })).toHaveCount(2);
+    expect(dialogFired).toBe(false);
+  });
+
+  test("Resend: no mandatory confirmation when the supplier's only existing dispatch is SENT (not SENDING); the existing generic create+send path still works and the old SENT dispatch is unchanged", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByLabel("Product").selectOption({ label: "RFQ UI Product (RFQUI-SKU)" });
+    await page.locator(".panel").filter({ hasText: "New Procurement Request" }).getByLabel("Quantity").fill("66");
+    await page.getByLabel("Unit").fill("EA");
+    await page.getByRole("button", { name: "Create Request" }).click();
+    await page.getByRole("button", { name: "Open Sourcing Event" }).click();
+
+    let rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+    await rfqSection.locator(".rfq-send-form select").selectOption({ label: "RFQ UI Supplier" });
+    await rfqSection.getByRole("button", { name: "Send RFQ" }).click();
+    await expect(rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" })).toBeVisible();
+
+    const dispatch = await prisma.rFQDispatch.findFirstOrThrow({
+      where: { tenantId, supplierId },
+      orderBy: { createdAt: "desc" },
+    });
+    await prisma.rFQDispatch.update({ where: { id: dispatch.id }, data: { status: "SENT" } });
+
+    await reopenWorkflow(page, "66");
+    rfqSection = page.locator("section.panel").filter({ hasText: "Request for Quote (RFQ)" });
+
+    let dialogFired = false;
+    page.on("dialog", async (dialog) => {
+      dialogFired = true;
+      await dialog.dismiss();
+    });
+
+    await rfqSection.locator(".rfq-send-form select").selectOption({ label: "RFQ UI Supplier" });
+    await rfqSection.getByRole("button", { name: "Send RFQ" }).click();
+
+    await expect(rfqSection.locator(".data-table tbody tr").filter({ hasText: "RFQ UI Supplier" })).toHaveCount(2);
+    expect(dialogFired).toBe(false);
+
+    const unchangedOriginal = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+    expect(unchangedOriginal.status).toBe("SENT");
+  });
 });

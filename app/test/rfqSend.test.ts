@@ -14,7 +14,7 @@ import { FakeEmailSender } from "./support/fakeEmailSender";
 // RFQ SEND — RFQ-S1/RFQ-S2 (docs/decisions/ratified.md). Exercises the
 // real test database, following this repo's established convention.
 // All email transport is the FakeEmailSender below — no real provider.
-describe("sendRFQDispatch (service)", () => {
+describe("sendRFQDispatch / retryRFQDispatch (service)", () => {
   let tenantAId: string;
   let tenantBId: string;
   let procurementUserAId: string;
@@ -348,12 +348,187 @@ describe("sendRFQDispatch (service)", () => {
       ).rejects.toThrow(/[Ii]nternal inconsistency/);
     });
   });
+
+  // ---------------------------------------------------------------
+  // retryRFQDispatch — RFQ-RT1/RFQ-RT3 (docs/decisions/ratified.md):
+  // same-dispatch retry, SEND_FAILED only. Shares the same internal
+  // pipeline as sendRFQDispatch (authorization, tenant isolation, CAS,
+  // token, compose, EmailSender.send, final CAS) — these tests focus on
+  // what differs (accepted starting state, same-id guarantee) rather
+  // than re-proving every pipeline step sendRFQDispatch's own tests
+  // above already cover.
+  // ---------------------------------------------------------------
+  describe("retryRFQDispatch (service)", () => {
+    async function freshSendFailedDispatch(supplierId = supplierAId, sourcingEventId = sourcingEventAId, tenantId = tenantAId) {
+      const dispatch = await rfqDispatchService.createRFQDispatch(tenantId, sourcingEventId, supplierId);
+      await prisma.rFQDispatch.update({ where: { id: dispatch.id }, data: { status: "SEND_FAILED" } });
+      return dispatch;
+    }
+
+    it("a SEND_FAILED dispatch is retryable, using the same RFQDispatch id, and a successful outcome resolves to SENT", async () => {
+      const dispatch = await freshSendFailedDispatch();
+      const result = await rfqDispatchService.retryRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps);
+      expect(result.status).toBe("SENT");
+
+      const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(row.id).toBe(dispatch.id);
+      expect(row.status).toBe("SENT");
+    });
+
+    it("an explicit failure on retry resolves to SEND_FAILED again, on the same id", async () => {
+      fakeSender.setNextOutcome({ kind: "failure", reason: "still rejected" });
+      const dispatch = await freshSendFailedDispatch();
+      const result = await rfqDispatchService.retryRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps);
+      expect(result.status).toBe("SEND_FAILED");
+
+      const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(row.id).toBe(dispatch.id);
+      expect(row.status).toBe("SEND_FAILED");
+      fakeSender.setNextOutcome({ kind: "success" }); // reset for subsequent tests
+    });
+
+    it("an unknown outcome on retry leaves the dispatch SENDING, never SEND_FAILED, never reverted to PENDING", async () => {
+      fakeSender.setNextOutcome({ kind: "unknown" });
+      const dispatch = await freshSendFailedDispatch();
+      const result = await rfqDispatchService.retryRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps);
+      expect(result.status).toBe("SENDING");
+
+      const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(row.status).toBe("SENDING");
+      fakeSender.setNextOutcome({ kind: "success" }); // reset for subsequent tests
+    });
+
+    it("retry does not create a second RFQDispatch — the same supplier/sourcingEvent row count is unchanged", async () => {
+      const dispatch = await freshSendFailedDispatch();
+      const countBefore = await prisma.rFQDispatch.count({
+        where: { tenantId: tenantAId, sourcingEventId: sourcingEventAId, supplierId: supplierAId },
+      });
+
+      await rfqDispatchService.retryRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps);
+
+      const countAfter = await prisma.rFQDispatch.count({
+        where: { tenantId: tenantAId, sourcingEventId: sourcingEventAId, supplierId: supplierAId },
+      });
+      expect(countAfter).toBe(countBefore);
+    });
+
+    it("retryRFQDispatch rejects a PENDING dispatch — PENDING is sendRFQDispatch's own first-send case, not retry's", async () => {
+      const dispatch = await freshPendingDispatch();
+      await expect(
+        rfqDispatchService.retryRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps)
+      ).rejects.toThrow(InvalidStateError);
+
+      const unchanged = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(unchanged.status).toBe("PENDING");
+    });
+
+    it("retryRFQDispatch rejects a SENDING dispatch — SENDING is never same-dispatch reclaimed (RFQ-RT4), including by retry", async () => {
+      const dispatch = await freshPendingDispatch();
+      await prisma.rFQDispatch.update({ where: { id: dispatch.id }, data: { status: "SENDING" } });
+      await expect(
+        rfqDispatchService.retryRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps)
+      ).rejects.toThrow(InvalidStateError);
+
+      const unchanged = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(unchanged.status).toBe("SENDING");
+    });
+
+    it("exactly one of two concurrent retry calls on the same SEND_FAILED dispatch wins, and EmailSender is invoked exactly once", async () => {
+      const dispatch = await freshSendFailedDispatch();
+      const callsBefore = fakeSender.calls.length;
+
+      const results = await Promise.allSettled([
+        rfqDispatchService.retryRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps),
+        rfqDispatchService.retryRFQDispatch(tenantAId, approverAId, dispatch.id, deps),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === "fulfilled");
+      const rejected = results.filter((r) => r.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(InvalidStateError);
+      expect(fakeSender.calls.length).toBe(callsBefore + 1);
+    });
+
+    it("retry preserves authorization — a role outside procurement_user/approver cannot retry", async () => {
+      const dispatch = await freshSendFailedDispatch();
+      await expect(
+        rfqDispatchService.retryRFQDispatch(tenantAId, otherRoleUserAId, dispatch.id, deps)
+      ).rejects.toThrow(AuthorizationError);
+
+      const unchanged = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(unchanged.status).toBe("SEND_FAILED");
+    });
+
+    it("retry preserves tenant isolation — a cross-tenant dispatch id is rejected identically, and the row is left completely unchanged", async () => {
+      const dispatch = await freshSendFailedDispatch(supplierBId, sourcingEventBId, tenantBId);
+      await expect(
+        rfqDispatchService.retryRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps)
+      ).rejects.toThrow(NotFoundError);
+
+      const unchanged = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(unchanged.status).toBe("SEND_FAILED");
+    });
+
+    it("retry rotates the response token exactly as sendRFQDispatch's own token rotation already does — a fresh token is issued and the previous one is no longer valid", async () => {
+      const dispatch = await freshSendFailedDispatch();
+      const before = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      const previousHash = before.responseTokenHash;
+
+      await rfqDispatchService.retryRFQDispatch(tenantAId, procurementUserAId, dispatch.id, deps);
+
+      const after = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+      expect(after.responseTokenHash).not.toBeNull();
+      expect(after.responseTokenHash).not.toBe(previousHash);
+
+      const sentBody = fakeSender.calls[fakeSender.calls.length - 1].body;
+      const match = sentBody.match(/rfq-response\/([0-9a-f]{64})/);
+      expect(match).not.toBeNull();
+      expect(hashToken(match![1])).toBe(after.responseTokenHash);
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // New RFQDispatch / sibling isolation — RFQ-RT5 (docs/decisions/
+  // ratified.md): a fresh communication always creates a new,
+  // independent RFQDispatch, and must never mutate an existing sibling
+  // dispatch for the same SourcingEvent + Supplier. Adversarial review
+  // finding: `status` alone was asserted unchanged elsewhere; this closes
+  // the gap for the remaining identity/token fields.
+  // ---------------------------------------------------------------
+  describe("new RFQDispatch / sibling isolation (RFQ-RT5)", () => {
+    it("creating and sending a new sibling RFQDispatch leaves an existing dispatch's id, status, responseTokenHash, tokenExpiresAt, and createdAt completely unchanged, and the new dispatch has its own independent id and token", async () => {
+      fakeSender.setNextOutcome({ kind: "unknown" });
+      const oldDispatch = await freshPendingDispatch();
+      await rfqDispatchService.sendRFQDispatch(tenantAId, procurementUserAId, oldDispatch.id, deps);
+      fakeSender.setNextOutcome({ kind: "success" }); // reset for subsequent tests
+
+      const oldBefore = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: oldDispatch.id } });
+      expect(oldBefore.status).toBe("SENDING");
+      expect(oldBefore.responseTokenHash).not.toBeNull();
+
+      const newDispatch = await rfqDispatchService.createRFQDispatch(tenantAId, sourcingEventAId, supplierAId);
+      await rfqDispatchService.sendRFQDispatch(tenantAId, procurementUserAId, newDispatch.id, deps);
+
+      const oldAfter = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: oldDispatch.id } });
+      expect(oldAfter.id).toBe(oldBefore.id);
+      expect(oldAfter.status).toBe(oldBefore.status);
+      expect(oldAfter.responseTokenHash).toBe(oldBefore.responseTokenHash);
+      expect(oldAfter.tokenExpiresAt?.getTime()).toBe(oldBefore.tokenExpiresAt?.getTime());
+      expect(oldAfter.createdAt.getTime()).toBe(oldBefore.createdAt.getTime());
+
+      const newRow = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: newDispatch.id } });
+      expect(newRow.id).not.toBe(oldDispatch.id);
+      expect(newRow.responseTokenHash).not.toBeNull();
+      expect(newRow.responseTokenHash).not.toBe(oldBefore.responseTokenHash);
+    });
+  });
 });
 
 // ---------------------------------------------------------------
 // HTTP boundary
 // ---------------------------------------------------------------
-describe("POST /rfq-dispatches/:id/send (HTTP)", () => {
+describe("POST /rfq-dispatches/:id/send & /retry (HTTP)", () => {
   let httpServer: Server;
   let baseUrl: string;
   let tenantId: string;
@@ -468,6 +643,74 @@ describe("POST /rfq-dispatches/:id/send (HTTP)", () => {
     const res = await httpPost(`/rfq-dispatches/${dispatch.id}/send`, authHeaders(procurementUserId, tenantId));
     expect(res.status).toBe(200);
     expect(res.json).toMatchObject({ status: "SENDING" });
+    fakeSender.setNextOutcome({ kind: "success" });
+  });
+
+  // RFQ-RT1/RFQ-RT3 (docs/decisions/ratified.md) — same-dispatch retry
+  // over HTTP. Reuses this describe block's existing server/fixtures;
+  // only the route path and accepted starting state differ from /send
+  // above.
+  async function dispatchInState(status: "PENDING" | "SENDING" | "SEND_FAILED", tid = tenantId, sid = supplierId, seid = sourcingEventId) {
+    const dispatch = await rfqDispatchService.createRFQDispatch(tid, seid, sid);
+    if (status !== "PENDING") {
+      await prisma.rFQDispatch.update({ where: { id: dispatch.id }, data: { status } });
+    }
+    return dispatch;
+  }
+
+  it("an unauthenticated request cannot reach /retry", async () => {
+    const dispatch = await dispatchInState("SEND_FAILED");
+    const res = await httpPost(`/rfq-dispatches/${dispatch.id}/retry`, null);
+    expect(res.status).toBe(401);
+  });
+
+  it("an authenticated role outside procurement_user/approver is rejected with 403 on /retry", async () => {
+    const dispatch = await dispatchInState("SEND_FAILED");
+    const res = await httpPost(`/rfq-dispatches/${dispatch.id}/retry`, authHeaders(otherRoleUserId, tenantId));
+    expect(res.status).toBe(403);
+  });
+
+  it("a caller authenticated as a different tenant cannot retry this dispatch", async () => {
+    const dispatch = await dispatchInState("SEND_FAILED");
+    const otherTenantUser = await prisma.user.create({
+      data: { tenantId: otherTenantId, name: "RFQRetry HTTP Cross User", role: "procurement_user" },
+    });
+    const res = await httpPost(`/rfq-dispatches/${dispatch.id}/retry`, authHeaders(otherTenantUser.id, otherTenantId));
+    expect(res.status).toBe(404);
+
+    const unchanged = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+    expect(unchanged.status).toBe("SEND_FAILED");
+  });
+
+  it("/retry rejects a PENDING dispatch (409) — first SEND is /send's own job", async () => {
+    const dispatch = await dispatchInState("PENDING");
+    const res = await httpPost(`/rfq-dispatches/${dispatch.id}/retry`, authHeaders(procurementUserId, tenantId));
+    expect(res.status).toBe(409);
+  });
+
+  it("/retry rejects a SENDING dispatch (409) — never same-dispatch reclaimed", async () => {
+    const dispatch = await dispatchInState("SENDING");
+    const res = await httpPost(`/rfq-dispatches/${dispatch.id}/retry`, authHeaders(procurementUserId, tenantId));
+    expect(res.status).toBe(409);
+  });
+
+  it("a valid authenticated retry of a SEND_FAILED dispatch succeeds end-to-end, on the same dispatch id", async () => {
+    fakeSender.setNextOutcome({ kind: "success" });
+    const dispatch = await dispatchInState("SEND_FAILED");
+    const res = await httpPost(`/rfq-dispatches/${dispatch.id}/retry`, authHeaders(procurementUserId, tenantId));
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ status: "SENT" });
+
+    const row = await prisma.rFQDispatch.findUniqueOrThrow({ where: { id: dispatch.id } });
+    expect(row.id).toBe(dispatch.id);
+  });
+
+  it("an explicit provider failure on retry surfaces as SEND_FAILED over HTTP", async () => {
+    fakeSender.setNextOutcome({ kind: "failure", reason: "provider rejected" });
+    const dispatch = await dispatchInState("SEND_FAILED");
+    const res = await httpPost(`/rfq-dispatches/${dispatch.id}/retry`, authHeaders(procurementUserId, tenantId));
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ status: "SEND_FAILED" });
     fakeSender.setNextOutcome({ kind: "success" });
   });
 });

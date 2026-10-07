@@ -159,6 +159,11 @@ export const api = {
 
   sendRFQDispatch: (rfqDispatchId: string) => post<{ status: string }>(`/rfq-dispatches/${rfqDispatchId}/send`, {}),
 
+  // RFQ-RT1/RFQ-RT3: same-dispatch retry, a distinct action from
+  // sendRFQDispatch above — always targets an existing dispatch id,
+  // never creates a new one.
+  retryRFQDispatch: (rfqDispatchId: string) => post<{ status: string }>(`/rfq-dispatches/${rfqDispatchId}/retry`, {}),
+
   // Principal-free — the opaque token in the path is the sole
   // identifier, exactly mirroring the backend's own unauthenticated
   // carve-out (RFQ-R1-R5). Never sends/receives a session cookie's worth

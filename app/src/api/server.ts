@@ -444,6 +444,21 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
     )
   );
 
+  // RFQ-RT1/RFQ-RT3 (docs/decisions/ratified.md) — same-dispatch retry,
+  // a distinct action from first SEND above, not a wider acceptance set
+  // on it. Same auth/tenant shape as /send (no client-supplied
+  // tenantId/actorUserId/role; both come exclusively from req.principal;
+  // no assertTenantMatches call, same reasoning as /send above) — the
+  // route grants no broader or narrower authority than /send, only a
+  // different starting-state acceptance (SEND_FAILED only, enforced by
+  // retryRFQDispatch's own CAS).
+  app.post(
+    "/rfq-dispatches/:id/retry",
+    wrap((req) =>
+      rfqDispatchService.retryRFQDispatch(req.principal!.tenantId, req.principal!.userId, req.params.id, sendDeps)
+    )
+  );
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof NotFoundError) return res.status(404).json({ error: err.name, message: err.message });

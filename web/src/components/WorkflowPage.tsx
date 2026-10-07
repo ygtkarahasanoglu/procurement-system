@@ -112,6 +112,7 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
                   <th>Status</th>
                   <th>Sent</th>
                   <th>Responded</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -123,6 +124,23 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
                     </td>
                     <td>{new Date(d.createdAt).toLocaleString()}</td>
                     <td>{d.respondedAt ? new Date(d.respondedAt).toLocaleString() : "—"}</td>
+                    <td>
+                      {/* RFQ-RT1/RFQ-RT3: same-dispatch retry, SEND_FAILED
+                          only — never shown for SENDING (RFQ-RT4: never
+                          same-dispatch retried/reclaimed) or any other
+                          status. Always targets this row's own id, never
+                          creates a new RFQDispatch. */}
+                      {d.status === "SEND_FAILED" && (
+                        <button
+                          type="button"
+                          className="btn btn--secondary"
+                          disabled={busy}
+                          onClick={() => runAction(() => api.retryRFQDispatch(d.id))}
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -141,13 +159,41 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
               type="button"
               className="btn btn--primary"
               disabled={busy || !rfqSupplierId}
-              onClick={() =>
+              onClick={() => {
+                // RFQ-RT5: fresh communication always creates a new,
+                // independent RFQDispatch — it never reuses an existing
+                // dispatch id (that is retryRFQDispatch's job, above, and
+                // only for SEND_FAILED). Not duplicate-safe: if the
+                // selected supplier already has a SENDING dispatch for
+                // this SourcingEvent, its external outcome is genuinely
+                // unknown — the prior email may already have reached the
+                // supplier — so RFQ-RT5 requires a blocking
+                // acknowledgement of that specific risk before a new
+                // dispatch is created. SEND_FAILED/SENT/RESPONDED
+                // history, or no prior dispatch at all, is deliberately
+                // NOT gated here — RFQ-RT2 already establishes
+                // SEND_FAILED as a known non-delivery signal (no
+                // duplicate-email risk to acknowledge), and inventing a
+                // SENT/RESPONDED-specific confirmation would mean
+                // designing a still-OPEN post-SENT resend policy this
+                // decision does not ratify.
+                const hasUnresolvedDispatch = rfqDispatches.some((d) => d.supplierId === rfqSupplierId && d.status === "SENDING");
+                if (
+                  hasUnresolvedDispatch &&
+                  !window.confirm(
+                    "A previous RFQ dispatch to this supplier is still SENDING: its outcome is unknown, and the earlier " +
+                      "email may already have reached the supplier. Sending a new RFQ now may result in the supplier " +
+                      "receiving a duplicate email.\n\nContinue anyway?"
+                  )
+                ) {
+                  return;
+                }
                 runAction(async () => {
                   const dispatch = await api.createRFQDispatch(sourcingEvent.id, rfqSupplierId);
                   await api.sendRFQDispatch(dispatch.id);
                   setRfqSupplierId("");
-                })
-              }
+                });
+              }}
             >
               Send RFQ
             </button>

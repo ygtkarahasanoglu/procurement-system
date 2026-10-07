@@ -124,6 +124,18 @@ export interface SendRFQDispatchDeps {
   responseBaseUrl: string;
 }
 
+// Internal, non-exported pipeline shared by sendRFQDispatch (first send)
+// and retryRFQDispatch (same-dispatch retry) below. RFQ-RT1
+// (docs/decisions/ratified.md) ratifies retry and resend as distinct
+// domain concepts — the two public entry points are deliberately
+// separate, narrowly-named functions, each accepting exactly one
+// starting status. What they genuinely share is this one execution
+// pipeline; `allowedStartingStatuses` is how that sharing happens
+// internally. This parameter is NOT exported — no caller outside this
+// module may choose an arbitrary status set (RFQ retry/resend
+// implementation design: "no generic exported API allowing arbitrary
+// status sets").
+//
 // RFQ-S1/RFQ-S2 (docs/decisions/ratified.md) — the SEND boundary. Exact
 // ordering, each step justified by the RFQ SEND implementation-design
 // assessment and its CAS/SENDING and authorization-role follow-ups:
@@ -139,13 +151,14 @@ export interface SendRFQDispatchDeps {
 //      always.
 //   3. deterministic preflight validation — Supplier.email is the only
 //      nullable field anywhere in this composition graph; if null, the
-//      dispatch is left PENDING, untouched, and InvalidStateError is
+//      dispatch is left untouched, and InvalidStateError is
 //      thrown. This is not an "unknown provider outcome" — it is a
 //      fully local, deterministic fact known before any external
 //      attempt, so it must never be allowed to enter SENDING at all.
-//   4. CAS claim (PENDING -> SENDING) — the sole authoritative exclusive
-//      claim; count === 0 is never distinguished by cause (race,
-//      already SENDING/SENT/SEND_FAILED) beyond a single InvalidStateError.
+//   4. CAS claim (one of `allowedStartingStatuses` -> SENDING) — the
+//      sole authoritative exclusive claim; count === 0 is never
+//      distinguished by cause (race, wrong starting state) beyond a
+//      single InvalidStateError.
 //   5. token issuance — only after a successful claim. If this throws,
 //      the dispatch is deliberately left in SENDING: no SEND_FAILED is
 //      written for a token-issuance failure, and no email is attempted.
@@ -154,14 +167,15 @@ export interface SendRFQDispatchDeps {
 //   6. compose — pure, no DB, no side effect (rfqEmailComposer.ts).
 //   7. EmailSender.send — the one true external side effect.
 //   8. final state — tenant-scoped, state-conditioned. "unknown" leaves
-//      SENDING untouched, per RFQ-S1; a final-write count === 0 is an
-//      internal inconsistency (this exact caller already held the
+//      SENDING untouched, per RFQ-S1/RFQ-RT2; a final-write count === 0
+//      is an internal inconsistency (this exact caller already held the
 //      exclusive SENDING claim), surfaced rather than silently ignored.
-export async function sendRFQDispatch(
+async function performRFQDispatchSendAttempt(
   tenantId: string,
   actorUserId: string,
   rfqDispatchId: string,
-  deps: SendRFQDispatchDeps
+  deps: SendRFQDispatchDeps,
+  allowedStartingStatuses: readonly string[]
 ) {
   const validTenantId = requireId(tenantId, "tenantId");
   const validActorUserId = requireId(actorUserId, "actorUserId");
@@ -216,12 +230,14 @@ export async function sendRFQDispatch(
   }
 
   const claim = await db.rFQDispatch.updateMany({
-    where: { id: validRfqDispatchId, tenantId: validTenantId, status: "PENDING" },
+    where: { id: validRfqDispatchId, tenantId: validTenantId, status: { in: [...allowedStartingStatuses] } },
     data: { status: "SENDING" },
   });
   if (claim.count === 0) {
     throw new InvalidStateError(
-      `RFQDispatch ${validRfqDispatchId} is not available to claim for SEND (not PENDING, or claimed concurrently).`
+      `RFQDispatch ${validRfqDispatchId} is not available to claim (not ${allowedStartingStatuses.join(
+        " or "
+      )}, or claimed concurrently).`
     );
   }
 
@@ -259,6 +275,40 @@ export async function sendRFQDispatch(
   }
 
   return { status: finalStatus };
+}
+
+// RFQ-S1/RFQ-S2 (docs/decisions/ratified.md) — first SEND only. Accepts
+// exactly PENDING; never SEND_FAILED, never SENDING. Behavior is
+// unchanged from before the retry/resend implementation (RFQ-RT1-RT5):
+// this function still does, and only does, a first SEND. For a
+// SEND_FAILED dispatch, see retryRFQDispatch below — same-dispatch retry
+// is a distinct action (RFQ-RT1), not a wider acceptance set on this
+// function.
+export async function sendRFQDispatch(
+  tenantId: string,
+  actorUserId: string,
+  rfqDispatchId: string,
+  deps: SendRFQDispatchDeps
+) {
+  return performRFQDispatchSendAttempt(tenantId, actorUserId, rfqDispatchId, deps, ["PENDING"]);
+}
+
+// RFQ-RT1/RFQ-RT3 (docs/decisions/ratified.md) — same-dispatch retry.
+// Accepts exactly SEND_FAILED, a deterministic non-delivery signal
+// (RFQ-RT2) — never PENDING (sendRFQDispatch's own first-send case, not
+// this one) and never SENDING: RFQ-RT4 forbids any same-dispatch
+// reclaim of an unresolved-outcome dispatch, under any circumstance,
+// including here. Operates on, and only on, the existing RFQDispatch id
+// supplied — it never creates a new row. A fresh RFQDispatch (resend) is
+// a materially different action (createRFQDispatch + sendRFQDispatch,
+// RFQ-RT5), not this function.
+export async function retryRFQDispatch(
+  tenantId: string,
+  actorUserId: string,
+  rfqDispatchId: string,
+  deps: SendRFQDispatchDeps
+) {
+  return performRFQDispatchSendAttempt(tenantId, actorUserId, rfqDispatchId, deps, ["SEND_FAILED"]);
 }
 
 // RFQ UI End-to-End V1 — read-only counterpart to submitSupplierResponse
