@@ -358,6 +358,26 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
     )
   );
 
+  // Provider Delivery & Outcome Confirmation Boundary — RFQ-PD1–RFQ-PD20
+  // (docs/decisions/ratified.md). Identical authorization shape to the
+  // route immediately above — authenticated, tenant-bound via
+  // assertTenantMatches, no new role/permission taxonomy, reusing
+  // RFQ-EH7's floor rather than inventing a new one. Deliberately a
+  // separate route, not folded into /events, mirroring that same
+  // decision's own reasoning for keeping this a distinct model/read
+  // path. See queryService.listRfqProviderDeliveryEvents's own comment
+  // for why this model needs an explicit, manual tenant check rather
+  // than the automatic R15/SEC-012 backstop.
+  app.get(
+    "/rfq-dispatches/:id/provider-events",
+    wrap((req) =>
+      queryService.listRfqProviderDeliveryEvents(
+        assertTenantMatches(req.principal!, req.query.tenantId as string),
+        req.params.id
+      )
+    )
+  );
+
   // Tenant-scoped reference-data creation. Exposes creation of the
   // existing flat Product/Supplier records only — no identity/master-data
   // subsystem (PI-C1-PI-C11, R3 remain untouched). tenantId is verified

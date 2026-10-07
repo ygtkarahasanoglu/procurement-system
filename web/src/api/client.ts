@@ -10,6 +10,8 @@ import type {
   RecommendationRecord,
   RequestLineWorkflow,
   RFQDispatch,
+  RfqCommunicationEvent,
+  RfqProviderDeliveryEvent,
   RfqResponseContext,
   SourcingEvent,
   Supplier,
@@ -163,6 +165,16 @@ export const api = {
   // sendRFQDispatch above — always targets an existing dispatch id,
   // never creates a new one.
   retryRFQDispatch: (rfqDispatchId: string) => post<{ status: string }>(`/rfq-dispatches/${rfqDispatchId}/retry`, {}),
+
+  // RFQ-EH7 (docs/decisions/ratified.md): same authenticated/tenant-bound
+  // read floor as every other GET above — no new role/permission concept.
+  getRfqCommunicationEvents: (tenantId: string, rfqDispatchId: string) =>
+    get<RfqCommunicationEvent[]>(`/rfq-dispatches/${rfqDispatchId}/events?tenantId=${tenantId}`),
+
+  // RFQ-PD1–RFQ-PD20: same read floor, reused per queryService's own
+  // comment — not a new decision.
+  getRfqProviderDeliveryEvents: (tenantId: string, rfqDispatchId: string) =>
+    get<RfqProviderDeliveryEvent[]>(`/rfq-dispatches/${rfqDispatchId}/provider-events?tenantId=${tenantId}`),
 
   // Principal-free — the opaque token in the path is the sole
   // identifier, exactly mirroring the backend's own unauthenticated

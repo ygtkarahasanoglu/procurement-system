@@ -169,3 +169,70 @@ export async function listRfqCommunicationEvents(tenantId: string, rfqDispatchId
     orderBy: { occurredAt: "asc" },
   });
 }
+
+// Provider Delivery & Outcome Confirmation Boundary — RFQ-PD1–RFQ-PD20
+// (docs/decisions/ratified.md). A narrow, read-only operational-
+// visibility extension, mirroring listRfqCommunicationEvents immediately
+// above — same authorization boundary (authenticated, tenant-bound via
+// assertTenantMatches at the route layer, no new role/permission
+// taxonomy), same dispatch-ownership-check-then-select-list shape. This
+// reuses RFQ-EH7's already-ratified read floor; it is not a new
+// semantic decision.
+//
+// RFQProviderDeliveryEvent is deliberately OUTSIDE db/client.ts's
+// TENANT_SCOPED_MODELS guard (see that model's own schema comment:
+// UNCORRELATED rows legitimately carry no tenantId) — so, unlike every
+// other query in this file, the R15/SEC-012 backstop provides NO
+// automatic protection here. The dispatch-ownership check below
+// therefore happens FIRST, via tenantScoped() against RFQDispatch
+// (which IS guarded); only once that succeeds does this function query
+// RFQProviderDeliveryEvent directly (via the bare `prisma` client,
+// matching providerDeliveryEventService.ts's own established
+// convention for this exact model), with an explicit `tenantId` AND
+// `rfqDispatchId` filter in its own `where` — never relying on the
+// guard to catch a mistake.
+//
+// Because the `where` clause always supplies the caller's own,
+// already-verified, non-null tenantId, this query can never return an
+// UNCORRELATED row: such rows always have tenantId = null in the
+// database, which can never equal a non-null filter value. No separate
+// "exclude UNCORRELATED" check is needed — it is structurally
+// impossible for one to match. This function also never looks up by
+// `providerMessageId`/`sg_message_id` or any other provider identifier,
+// and never searches across dispatches (RFQ-PD5).
+//
+// Deliberately narrow select: eventType/providerSubtype/providerEventAt
+// only. `providerMessageId` is retained in the schema only as
+// diagnostic metadata for manual investigation (RFQ-PD5) and is
+// deliberately never returned by this ordinary operational read;
+// `correlationState`, `provider`, `tenantId`, and `rfqDispatchId` are
+// internal plumbing a procurement user never needs to see. No
+// confidence/attribution field exists anywhere in the schema to
+// accidentally select (RFQ-PD8/RFQ-ATT1).
+export async function listRfqProviderDeliveryEvents(tenantId: string, rfqDispatchId: string) {
+  const validTenantId = requireId(tenantId, "tenantId");
+  const validRfqDispatchId = requireId(rfqDispatchId, "rfqDispatchId");
+  const db = tenantScoped(validTenantId);
+
+  // Existence + tenant check, same shape as every sibling lookup in
+  // this file — a cross-tenant or nonexistent dispatch id is rejected
+  // identically (NotFoundError), never distinguished.
+  const dispatch = await db.rFQDispatch.findFirst({
+    where: { id: validRfqDispatchId, tenantId: validTenantId },
+    select: { id: true },
+  });
+  if (!dispatch) {
+    throw new NotFoundError("RFQDispatch", validRfqDispatchId);
+  }
+
+  return prisma.rFQProviderDeliveryEvent.findMany({
+    where: { tenantId: validTenantId, rfqDispatchId: validRfqDispatchId },
+    select: {
+      id: true,
+      eventType: true,
+      providerSubtype: true,
+      providerEventAt: true,
+    },
+    orderBy: { providerEventAt: "asc" },
+  });
+}

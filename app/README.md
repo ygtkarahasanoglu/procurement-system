@@ -266,15 +266,15 @@ CI must not prompt or generate new migrations) → `npm run build`
 the commands above (`npm run db:migrate`, `npm test`) are sufficient —
 CI does not add any test behavior beyond what `npm test` already runs.
 
-**Known pre-existing failure, not introduced by CI:** `test/
-workflow.e2e.test.ts`'s own `resetDatabase()` deletes `SourcingEvent`
-rows before `RFQDispatch` rows that reference them, which fails with a
-foreign-key violation whenever an earlier test file in the same run has
-left an `RFQDispatch` behind (several RFQ test files create fixtures
-without their own teardown). This is a pre-existing gap in that one
-test file's own cleanup ordering, unrelated to CI — CI surfaces it
-rather than hiding it, and it is intentionally left unfixed here rather
-than silently patched to produce an artificially green run.
+**Resolved pre-existing failure (fixed in commit `95b01a1`):** `test/
+workflow.e2e.test.ts`'s own `resetDatabase()` previously deleted
+`SourcingEvent` rows before `RFQDispatch` rows that referenced them,
+failing with a foreign-key violation whenever an earlier test file in
+the same run had left an `RFQDispatch` behind. CI's own introduction
+surfaced this pre-existing gap rather than hiding it; the fix corrected
+`resetDatabase()`'s deletion order (`RFQCommunicationEvent`/
+`RFQProviderDeliveryEvent`/`RFQDispatch` now deleted before
+`SourcingEvent`) without touching CI itself.
 
 **Not yet covered by CI:** the Playwright E2E suite (`test-e2e/`).
 Its own `playwright.config.ts` documents that it assumes the backend

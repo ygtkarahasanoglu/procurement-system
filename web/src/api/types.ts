@@ -152,6 +152,37 @@ export interface RFQDispatch {
   respondedAt: string | null;
 }
 
+/** RFQ-EH2/RFQ-EH7 (docs/decisions/ratified.md) — returned by
+ * GET /rfq-dispatches/:id/events, exactly the fields
+ * queryService.listRfqCommunicationEvents selects. The closed, canonical
+ * event vocabulary — never any other eventType/outcome/actorSource. */
+export interface RfqCommunicationEvent {
+  id: string;
+  eventType: "DISPATCH_CREATED" | "SEND_ATTEMPT_RESULT" | "SUPPLIER_RESPONSE_RECEIVED";
+  occurredAt: string;
+  actorSource: "INTERNAL_USER" | "SYSTEM" | "SUPPLIER" | "PROVIDER";
+  actorUserId: string | null;
+  outcome: "ACCEPTED" | "FAILED" | "UNKNOWN" | null;
+  providerMessageId: string | null;
+  quoteVersionId: string | null;
+}
+
+/** RFQ-PD1–RFQ-PD20 (docs/decisions/ratified.md) — returned by
+ * GET /rfq-dispatches/:id/provider-events, exactly the fields
+ * queryService.listRfqProviderDeliveryEvents selects. Provider
+ * mail-transport evidence ONLY — never supplier receipt, reading,
+ * acceptance, agreement, identity, or representative authority
+ * (RFQ-PD20/RFQ-ATT1). Deliberately omits providerMessageId,
+ * correlationState, tenantId, and rfqDispatchId — see the backend
+ * function's own comment for why. No confidence/attribution field
+ * exists here, by design (RFQ-PD8/RFQ-ATT1) — never add one. */
+export interface RfqProviderDeliveryEvent {
+  id: string;
+  eventType: "PROCESSED" | "DEFERRED" | "DELIVERED" | "BOUNCE" | "DROPPED";
+  providerSubtype: string | null;
+  providerEventAt: string;
+}
+
 export interface RequestLineWorkflow {
   requestLine: RequestLine & { request: ProcurementRequest };
   sourcingEvent: SourcingEvent | null;

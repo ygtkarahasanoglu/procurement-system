@@ -1,8 +1,24 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { Product, RequestLineWorkflow, Supplier, User } from "../api/types";
+import type { Product, RequestLineWorkflow, RfqCommunicationEvent, RfqProviderDeliveryEvent, Supplier, User } from "../api/types";
 import { StatusStepper } from "./StatusStepper";
 import { QuoteForm } from "./QuoteForm";
+
+// RFQ-PD1–RFQ-PD20 (docs/decisions/ratified.md): maps the closed,
+// provider-neutral delivery vocabulary onto display text that preserves
+// RFQ-PD20's own canonical separation — provider mail-transport status
+// only, never worded as supplier receipt/reading/acceptance/agreement.
+function providerDeliveryLabel(e: RfqProviderDeliveryEvent): string {
+  if (e.eventType === "BOUNCE" && e.providerSubtype === "BLOCKED") return "Blocked by provider";
+  const labels: Record<RfqProviderDeliveryEvent["eventType"], string> = {
+    PROCESSED: "Processed by provider",
+    DEFERRED: "Deferred by provider",
+    DELIVERED: "Delivered by provider",
+    BOUNCE: "Bounced by provider",
+    DROPPED: "Dropped by provider",
+  };
+  return labels[e.eventType];
+}
 
 interface Props {
   tenantId: string;
@@ -31,6 +47,13 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
   const [selectedQuoteVersionId, setSelectedQuoteVersionId] = useState("");
   const [selectedQuantity, setSelectedQuantity] = useState("");
   const [rfqSupplierId, setRfqSupplierId] = useState("");
+  // RFQ Event History (RFQ-EH7) / Provider Delivery (RFQ-PD1–RFQ-PD20)
+  // read-only operational visibility. Keyed by RFQDispatch id. Both reads
+  // use the same authenticated/tenant-bound floor as getWorkflow above —
+  // no new role/permission concept.
+  const [dispatchEvents, setDispatchEvents] = useState<
+    Record<string, { comm: RfqCommunicationEvent[]; provider: RfqProviderDeliveryEvent[] }>
+  >({});
 
   const reload = useCallback(() => {
     api.getWorkflow(tenantId, requestLineId).then(setData).catch(onError);
@@ -39,6 +62,15 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
   useEffect(() => {
     reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (!data) return;
+    data.rfqDispatches.forEach((d) => {
+      Promise.all([api.getRfqCommunicationEvents(tenantId, d.id), api.getRfqProviderDeliveryEvents(tenantId, d.id)])
+        .then(([comm, provider]) => setDispatchEvents((prev) => ({ ...prev, [d.id]: { comm, provider } })))
+        .catch(onError);
+    });
+  }, [data, tenantId, onError]);
 
   if (!data) return <p>Loading…</p>;
 
@@ -116,33 +148,81 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
                 </tr>
               </thead>
               <tbody>
-                {rfqDispatches.map((d) => (
-                  <tr key={d.id}>
-                    <td>{d.supplier.name}</td>
-                    <td>
-                      <span className="badge">{d.status}</span>
-                    </td>
-                    <td>{new Date(d.createdAt).toLocaleString()}</td>
-                    <td>{d.respondedAt ? new Date(d.respondedAt).toLocaleString() : "—"}</td>
-                    <td>
-                      {/* RFQ-RT1/RFQ-RT3: same-dispatch retry, SEND_FAILED
-                          only — never shown for SENDING (RFQ-RT4: never
-                          same-dispatch retried/reclaimed) or any other
-                          status. Always targets this row's own id, never
-                          creates a new RFQDispatch. */}
-                      {d.status === "SEND_FAILED" && (
-                        <button
-                          type="button"
-                          className="btn btn--secondary"
-                          disabled={busy}
-                          onClick={() => runAction(() => api.retryRFQDispatch(d.id))}
-                        >
-                          Retry
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {rfqDispatches.map((d) => {
+                  const events = dispatchEvents[d.id];
+                  return (
+                    <Fragment key={d.id}>
+                      <tr>
+                        <td>{d.supplier.name}</td>
+                        <td>
+                          <span className="badge">{d.status}</span>
+                        </td>
+                        <td>{new Date(d.createdAt).toLocaleString()}</td>
+                        <td>{d.respondedAt ? new Date(d.respondedAt).toLocaleString() : "—"}</td>
+                        <td>
+                          {/* RFQ-RT1/RFQ-RT3: same-dispatch retry, SEND_FAILED
+                              only — never shown for SENDING (RFQ-RT4: never
+                              same-dispatch retried/reclaimed) or any other
+                              status. Always targets this row's own id, never
+                              creates a new RFQDispatch. */}
+                          {d.status === "SEND_FAILED" && (
+                            <button
+                              type="button"
+                              className="btn btn--secondary"
+                              disabled={busy}
+                              onClick={() => runAction(() => api.retryRFQDispatch(d.id))}
+                            >
+                              Retry
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                      {/* RFQ-EH7 / RFQ-PD1–RFQ-PD20: read-only operational
+                          visibility only — no action, no business rule,
+                          no new semantic claim. Two clearly separated
+                          sections, never merged into one undifferentiated
+                          list (RFQ-EH1 vs RFQ-PD1–PD20 remain distinct
+                          event categories). */}
+                      <tr>
+                        <td colSpan={5}>
+                          <div>
+                            <h4>Communication history</h4>
+                            {events && events.comm.length > 0 ? (
+                              <ul>
+                                {events.comm.map((e) => (
+                                  <li key={e.id}>
+                                    {new Date(e.occurredAt).toLocaleString()} — {e.eventType}
+                                    {e.outcome ? ` (${e.outcome})` : ""}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p className="empty-state">No communication history yet.</p>
+                            )}
+                          </div>
+                          <div>
+                            <h4>Provider delivery evidence</h4>
+                            <p className="panel-hint">
+                              Mail-transport status reported by the email provider only — never supplier receipt,
+                              reading, acceptance, or agreement.
+                            </p>
+                            {events && events.provider.length > 0 ? (
+                              <ul>
+                                {events.provider.map((e) => (
+                                  <li key={e.id}>
+                                    {new Date(e.providerEventAt).toLocaleString()} — {providerDeliveryLabel(e)}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p className="empty-state">No provider delivery evidence yet.</p>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           )}
