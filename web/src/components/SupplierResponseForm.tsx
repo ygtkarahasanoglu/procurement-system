@@ -1,9 +1,62 @@
-import { useState, type FormEvent } from "react";
+import { useState, type ChangeEvent, type FormEvent } from "react";
 import { api } from "../api/client";
 
 interface Props {
   token: string;
   onSubmitted: () => void;
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(",")[1] ?? "");
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+// AI-1 (docs/decisions/ratified.md) — "partly supersedes RFQ-R5": the
+// alternative to filling the form. Uploading a document consumes the
+// response token exactly like a form submission (same dispatch state
+// change, same event history) — it never creates a QuoteVersion itself;
+// a procurement user reviews and confirms it later from the internal
+// workflow screen.
+export function SupplierDocumentUpload({ token, onSubmitted }: Props) {
+  const [uploading, setUploading] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+
+  async function handleFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setServerError(null);
+    setUploading(true);
+    try {
+      const base64 = await fileToBase64(file);
+      await api.uploadRfqResponseDocument(token, { fileName: file.name, mimeType: file.type, base64 });
+      onSubmitted();
+    } catch (err) {
+      setServerError(err instanceof Error ? err.message : "Upload failed.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <div className="supplier-document-upload">
+      <label className="btn btn--secondary">
+        {uploading ? "Yükleniyor…" : "veya teklif dosyanızı yükleyin"}
+        <input
+          type="file"
+          accept=".pdf,.jpg,.jpeg,.png,.xlsx"
+          style={{ display: "none" }}
+          onChange={handleFile}
+          disabled={uploading}
+        />
+      </label>
+      {serverError && <p className="form-error">{serverError}</p>}
+    </div>
+  );
 }
 
 // RFQ UI End-to-End V1. Collects exactly the four RFQ-R5 fields the

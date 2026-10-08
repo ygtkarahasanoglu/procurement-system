@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { RfqResponseContext } from "../api/types";
-import { SupplierResponseForm } from "./SupplierResponseForm";
+import { SupplierResponseForm, SupplierDocumentUpload } from "./SupplierResponseForm";
 
 interface Props {
   token: string;
@@ -50,6 +50,7 @@ export function SupplierResponsePage({ token }: Props) {
               {context.productName} — {context.requestedQuantity} {context.unit} requested
             </p>
             <SupplierResponseForm token={token} onSubmitted={() => setSubmitted(true)} />
+            <SupplierDocumentUpload token={token} onSubmitted={() => setSubmitted(true)} />
           </section>
         )}
       </main>
