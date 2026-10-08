@@ -12,6 +12,9 @@ import * as productService from "../services/productService";
 import * as supplierService from "../services/supplierService";
 import * as rfqDispatchService from "../services/rfqDispatchService";
 import type { SendRFQDispatchDeps } from "../services/rfqDispatchService";
+import * as quoteDocumentService from "../services/quoteDocumentService";
+import type { QuoteDocumentServiceDeps } from "../services/quoteDocumentService";
+import { getConfiguredQuoteExtractionProvider } from "../services/quoteExtractionProvider";
 import { Prisma } from "@prisma/client";
 import { AuthorizationError } from "../domain/authorization";
 import { NotFoundError, InvalidStateError, ApprovalRequiredError, CommercialDeviationError, ValidationError } from "../domain/errors";
@@ -43,6 +46,23 @@ const DEFAULT_SEND_DEPS: SendRFQDispatchDeps = {
   emailSender: sendGridEmailSender,
   responseBaseUrl: "http://localhost:3000",
 };
+
+// AI-1 (docs/decisions/ratified.md): same DI seam shape as
+// DEFAULT_SEND_DEPS above — the configured provider (AI_EXTRACTION_PROVIDER
+// env, read lazily inside getConfiguredQuoteExtractionProvider) is the
+// real default; tests inject their own fake provider via createApp's
+// third parameter.
+const DEFAULT_QUOTE_DOCUMENT_DEPS: QuoteDocumentServiceDeps = {
+  provider: getConfiguredQuoteExtractionProvider(),
+};
+
+// AI-1: both quote-document upload routes carry up to ~13.3MB of base64
+// file content (10MB file limit × ~4/3 base64 overhead) — far above the
+// global express.json() default (100kb, applied below). Express applies
+// only the first body parser that matches a request; mounted here,
+// before that global parser, exactly like the SendGrid webhook's own
+// express.raw() above.
+const QUOTE_DOCUMENT_JSON_LIMIT = "15mb";
 
 // AUTHN-11 (CORS Restriction Requirement, docs/decisions/ratified.md):
 // reads a comma-separated allow-list of exact trusted browser origins from
@@ -77,7 +97,11 @@ function parseCorsTrustedOrigins(raw: string | undefined): string[] {
 // below supplies a temporary placeholder (never invoked, always resolves to
 // null) solely so this required parameter can be satisfied before a real
 // Authenticator is chosen in a later step — see the comment there.
-export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatchDeps = DEFAULT_SEND_DEPS) {
+export function createApp(
+  authenticator: Authenticator,
+  sendDeps: SendRFQDispatchDeps = DEFAULT_SEND_DEPS,
+  quoteDocumentDeps: QuoteDocumentServiceDeps = DEFAULT_QUOTE_DOCUMENT_DEPS
+) {
   const app = express();
   app.locals.authenticator = authenticator;
 
@@ -195,6 +219,53 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
       console.log(`[sendgrid-webhook] authenticated batch of ${events.length} event(s), recorded ${recorded}.`);
       return res.status(200).json({ received: true });
     }
+  );
+
+  // AI-1 (docs/decisions/ratified.md): buyer quote-document upload.
+  // Mounted here — before the global express.json() below, and before
+  // the Principal authentication middleware further down — purely so
+  // its own express.json({limit: "15mb"}) is the one that parses this
+  // route's body (see QUOTE_DOCUMENT_JSON_LIMIT's own comment above).
+  // Because the generic authentication middleware has not run yet at
+  // this point in registration order, this route authenticates itself
+  // inline, via the exact same authenticator/401 shape that middleware
+  // applies to every other route below it.
+  app.post(
+    "/quote-documents",
+    express.json({ limit: QUOTE_DOCUMENT_JSON_LIMIT }),
+    async (req: Request, res: Response, next: NextFunction) => {
+      const requestAuthenticator = req.app.locals.authenticator as Authenticator;
+      let principal: Principal | null;
+      try {
+        principal = await requestAuthenticator(req);
+      } catch (err) {
+        return next(err);
+      }
+      if (!principal) {
+        return res.status(401).json({ error: "Unauthenticated", message: "Authentication is required." });
+      }
+      try {
+        const result = await quoteDocumentService.uploadQuoteDocument(
+          principal.tenantId,
+          principal.userId,
+          req.body,
+          quoteDocumentDeps
+        );
+        res.status(200).json(result);
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // AI-1: supplier document upload via the RFQ response link ("partly
+  // supersedes RFQ-R5") — unauthenticated, token-scoped, same carve-out
+  // reasoning as POST /rfq-responses/:token below, and the same
+  // route-scoped body-limit reasoning as POST /quote-documents above.
+  app.post(
+    "/rfq-responses/:token/document",
+    express.json({ limit: QUOTE_DOCUMENT_JSON_LIMIT }),
+    wrap((req) => quoteDocumentService.uploadSupplierQuoteDocument(req.params.token, req.body, quoteDocumentDeps))
   );
 
   app.use(express.json());
@@ -458,6 +529,57 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
     wrap((req) =>
       quoteService.listQuoteVersionsForSourcingEvent(
         assertTenantMatches(req.principal!, req.query.tenantId as string),
+        req.params.id
+      )
+    )
+  );
+
+  // AI-1 (docs/decisions/ratified.md): same authenticated/tenant-bound
+  // floor as every other GET above.
+  app.get(
+    "/sourcing-events/:id/quote-extractions",
+    wrap((req) =>
+      quoteDocumentService.listQuoteExtractionsForSourcingEvent(
+        assertTenantMatches(req.principal!, req.query.tenantId as string),
+        req.params.id
+      )
+    )
+  );
+
+  // AI-1: streams the original file back — tenant-checked, never the
+  // generic `wrap` helper (which always responds with
+  // application/json). Content-Disposition is deliberately omitted
+  // (inline, not a forced download) so a PDF/image opens directly in a
+  // new tab from the UI's own link.
+  app.get("/quote-documents/:id/file", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const tenantId = assertTenantMatches(req.principal!, req.query.tenantId as string);
+      const document = await quoteDocumentService.getQuoteDocumentFile(tenantId, req.params.id);
+      res.setHeader("Content-Type", document.mimeType);
+      res.status(200).send(document.content);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post(
+    "/quote-extractions/:id/confirm",
+    wrap((req) =>
+      quoteDocumentService.confirmExtraction(
+        assertTenantMatches(req.principal!, req.body.tenantId),
+        req.principal!.userId,
+        req.params.id,
+        req.body
+      )
+    )
+  );
+
+  app.post(
+    "/quote-extractions/:id/reject",
+    wrap((req) =>
+      quoteDocumentService.rejectExtraction(
+        assertTenantMatches(req.principal!, req.body.tenantId),
+        req.principal!.userId,
         req.params.id
       )
     )

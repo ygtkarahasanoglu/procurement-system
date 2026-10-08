@@ -1,6 +1,23 @@
 import { tenantScoped } from "../db/client";
 import { NotFoundError, ValidationError } from "../domain/errors";
-import { requireId, requirePositiveDecimal, requireUnit, requireCurrency } from "../domain/validation";
+import {
+  requireId,
+  requirePositiveDecimal,
+  requireUnit,
+  requireCurrency,
+  requireOptionalPositiveInt,
+  requireOptionalIsoDate,
+  requireOptionalBoundedString,
+} from "../domain/validation";
+
+// The real tenantScoped() client type (never a hand-rolled structural
+// subset) — submitQuote's return type is inferred from this, and a
+// narrower type here would silently widen/weaken that inference for
+// every caller. AI-1 (quoteDocumentService.confirmExtraction) needs
+// submitQuote to run inside an existing `$transaction` callback; see
+// that call site's own comment for why a cast, not a type change here,
+// is how that is bridged.
+type QuoteServiceDb = ReturnType<typeof tenantScoped>;
 
 // RL-C4: a supplier may quote less than the requested quantity; this is
 // not inherently invalid. This service imposes NO minimum relative to
@@ -18,9 +35,15 @@ export interface SubmitQuoteInput {
   unit: string;
   unitPrice: string | number;
   currency: string;
+  // AI-1 (docs/decisions/ratified.md): optional, displayed-only fields —
+  // never read by recommendationService.ts in V1.
+  leadTimeDays?: number;
+  paymentTermDays?: number;
+  validUntil?: string;
+  incoterm?: string;
 }
 
-export async function submitQuote(input: SubmitQuoteInput) {
+export async function submitQuote(input: SubmitQuoteInput, dbOverride?: QuoteServiceDb) {
   if (input === null || typeof input !== "object") {
     throw new ValidationError("Request body must be an object.");
   }
@@ -33,7 +56,11 @@ export async function submitQuote(input: SubmitQuoteInput) {
   const unit = requireUnit(input.unit);
   const unitPrice = requirePositiveDecimal(input.unitPrice, "unitPrice");
   const currency = requireCurrency(input.currency);
-  const db = tenantScoped(tenantId);
+  const leadTimeDays = requireOptionalPositiveInt(input.leadTimeDays, "leadTimeDays");
+  const paymentTermDays = requireOptionalPositiveInt(input.paymentTermDays, "paymentTermDays");
+  const validUntil = requireOptionalIsoDate(input.validUntil, "validUntil");
+  const incoterm = requireOptionalBoundedString(input.incoterm, "incoterm", 16);
+  const db = dbOverride ?? tenantScoped(tenantId);
 
   const sourcingEvent = await db.sourcingEvent.findFirst({
     where: { id: sourcingEventId, tenantId },
@@ -70,6 +97,10 @@ export async function submitQuote(input: SubmitQuoteInput) {
           unit,
           unitPrice,
           currency,
+          leadTimeDays,
+          paymentTermDays,
+          validUntil,
+          incoterm,
         },
       },
     },

@@ -66,3 +66,37 @@ export function requireUnit(value: unknown): string {
   }
   return str;
 }
+
+// AI-1 (docs/decisions/ratified.md): optional QuoteVersion fields
+// (leadTimeDays, paymentTermDays, validUntil, incoterm) — undefined/null
+// is passed through unchanged (the field stays unset); any other value
+// is validated and rejected, never coerced, same reject-not-coerce
+// discipline as every other field in this file.
+export function requireOptionalPositiveInt(value: unknown, fieldName: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new ValidationError(`${fieldName} must be a positive integer (got: ${JSON.stringify(value)}).`);
+  }
+  return value;
+}
+
+export function requireOptionalIsoDate(value: unknown, fieldName: string): Date | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new ValidationError(`${fieldName} must be an ISO date string (got: ${JSON.stringify(value)}).`);
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new ValidationError(`${fieldName} must be a valid ISO date string (got: ${JSON.stringify(value)}).`);
+  }
+  return date;
+}
+
+export function requireOptionalBoundedString(value: unknown, fieldName: string, maxLength: number): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const str = requireNonEmptyString(value, fieldName).trim();
+  if (str.length > maxLength) {
+    throw new ValidationError(`${fieldName} must be ${maxLength} characters or fewer (got: ${JSON.stringify(value)}).`);
+  }
+  return str;
+}

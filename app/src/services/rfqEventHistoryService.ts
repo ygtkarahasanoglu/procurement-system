@@ -48,9 +48,16 @@ export async function recordDispatchCreatedEvent(
 // QuoteVersion's own id is referenced. Deliberately does not catch its
 // own errors, for the same reason as recordDispatchCreatedEvent above:
 // nothing externally irreversible has happened in this flow either.
+//
+// AI-1 (docs/decisions/ratified.md): quoteVersionId is null for the
+// supplier document-upload entry path — that upload consumes the token
+// (same transaction pairing as the RFQ-R4 form-submission path) but
+// never creates a QuoteVersion itself; only a later, separate human
+// confirmExtraction does. The schema column is nullable for exactly
+// this case.
 export async function recordSupplierResponseReceivedEvent(
   db: RfqEventHistoryWriter,
-  input: { tenantId: string; rfqDispatchId: string; quoteVersionId: string }
+  input: { tenantId: string; rfqDispatchId: string; quoteVersionId: string | null }
 ): Promise<void> {
   await db.rFQCommunicationEvent.create({
     data: {

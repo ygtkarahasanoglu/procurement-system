@@ -37,6 +37,13 @@ async function resetDatabase() {
     // with a foreign-key violation on RFQDispatch_sourcingEventId_fkey.
     prisma.rFQCommunicationEvent.deleteMany(),
     prisma.rFQProviderDeliveryEvent.deleteMany(),
+    // AI-1 (docs/decisions/ratified.md): QuoteExtraction references
+    // QuoteDocument (required) and QuoteVersion (nullable); QuoteDocument
+    // references SourcingEvent/Supplier (required) and RFQDispatch
+    // (nullable) — both must be deleted before sourcingEvent.deleteMany()
+    // below, same reasoning as the RFQDispatch fix above.
+    prisma.quoteExtraction.deleteMany(),
+    prisma.quoteDocument.deleteMany(),
     prisma.quoteVersion.deleteMany(),
     prisma.supplierQuote.deleteMany(),
     // RFQDispatch references SourcingEvent and Supplier — must be deleted

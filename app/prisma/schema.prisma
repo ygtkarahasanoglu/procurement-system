@@ -39,6 +39,8 @@ model Tenant {
   purchaseOrders   PurchaseOrder[]
   rfqCommunicationEvents RFQCommunicationEvent[]
   rfqProviderDeliveryEvents RFQProviderDeliveryEvent[]
+  quoteDocuments QuoteDocument[]
+  quoteExtractions QuoteExtraction[]
 }
 
 // Minimum actor representation. Role is a plain string for V1 — see
@@ -108,6 +110,7 @@ model Supplier {
 
   supplierQuotes SupplierQuote[]
   rfqDispatches  RFQDispatch[]
+  quoteDocuments QuoteDocument[]
 
   @@index([tenantId])
 }
@@ -170,6 +173,7 @@ model SourcingEvent {
   supplierQuotes   SupplierQuote[]
   recommendations  RecommendationRecord[]
   decisionPackages DecisionPackage[]
+  quoteDocuments   QuoteDocument[]
 
   @@index([tenantId])
   @@index([requestLineId])
@@ -214,6 +218,7 @@ model RFQDispatch {
   supplierQuotes SupplierQuote[]
   communicationEvents RFQCommunicationEvent[]
   providerDeliveryEvents RFQProviderDeliveryEvent[]
+  quoteDocuments QuoteDocument[]
 
   @@index([tenantId])
   @@index([sourcingEventId])
@@ -388,12 +393,83 @@ model QuoteVersion {
   currency        String
   createdAt       DateTime      @default(now())
 
+  // AI-1 (docs/decisions/ratified.md): optional fields captured from a
+  // quote document (AI extraction, human-confirmed) or entered manually.
+  // Displayed only — not read by recommendationService.ts in V1.
+  leadTimeDays    Int?
+  paymentTermDays Int?
+  validUntil      DateTime?
+  incoterm        String?
+
   recommendations  RecommendationRecord[]
   decisionPackages DecisionPackage[]
   communicationEvents RFQCommunicationEvent[]
+  quoteExtractions QuoteExtraction[]
 
   @@unique([supplierQuoteId, versionNumber])
   @@index([tenantId])
+}
+
+// AI-1 (docs/decisions/ratified.md): CapturedEvidence — the original
+// quote document, stored unchanged. Two entry paths: a procurement user
+// upload (uploadedVia USER, uploadedByUserId set) or a supplier upload
+// through its RFQ response link (uploadedVia SUPPLIER_LINK,
+// rfqDispatchId set, uploadedByUserId null — no Principal exists on
+// that unauthenticated path). content stores the raw bytes; sha256 is
+// computed at upload time for integrity/dedup-evidence purposes only
+// (no dedup behavior is implemented on it in V1).
+model QuoteDocument {
+  id              String         @id @default(uuid())
+  tenantId        String
+  tenant          Tenant         @relation(fields: [tenantId], references: [id])
+  sourcingEventId String
+  sourcingEvent   SourcingEvent  @relation(fields: [sourcingEventId], references: [id])
+  supplierId      String
+  supplier        Supplier       @relation(fields: [supplierId], references: [id])
+  rfqDispatchId   String?
+  rfqDispatch     RFQDispatch?   @relation(fields: [rfqDispatchId], references: [id])
+  fileName        String
+  mimeType        String
+  sizeBytes       Int
+  sha256          String
+  content         Bytes
+  uploadedVia     String // "USER" | "SUPPLIER_LINK"
+  uploadedByUserId String?
+  createdAt       DateTime       @default(now())
+
+  extractions QuoteExtraction[]
+
+  @@index([tenantId])
+  @@index([sourcingEventId])
+  @@index([supplierId])
+  @@index([rfqDispatchId])
+}
+
+// AI-1 (docs/decisions/ratified.md): the StructuredClaim produced by AI
+// extraction from one QuoteDocument, plus its human Validation outcome.
+// `extracted` holds the validated candidate-lines JSON (never persisted
+// unvalidated, per R12 — "confidence never substitutes for evidence").
+// quoteVersionId is set only on CONFIRMED, referencing (never copying)
+// the resulting QuoteVersion's own immutable content.
+model QuoteExtraction {
+  id              String        @id @default(uuid())
+  tenantId        String
+  tenant          Tenant        @relation(fields: [tenantId], references: [id])
+  quoteDocumentId String
+  quoteDocument   QuoteDocument @relation(fields: [quoteDocumentId], references: [id])
+  provider        String
+  model           String
+  status          String        // PENDING_REVIEW | CONFIRMED | REJECTED | FAILED
+  extracted       Json?
+  errorMessage    String?
+  reviewedByUserId String?
+  reviewedAt      DateTime?
+  quoteVersionId  String?
+  quoteVersion    QuoteVersion? @relation(fields: [quoteVersionId], references: [id])
+  createdAt       DateTime      @default(now())
+
+  @@index([tenantId])
+  @@index([quoteDocumentId])
 }
 
 // ---------------------------------------------------------------------
