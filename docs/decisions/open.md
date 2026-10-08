@@ -67,8 +67,7 @@ event should be treated as an error and corrected, not built upon.
 - **RLS** — whether Row-Level Security is adopted as a defense-in-depth
   layer alongside service-layer authorization (R10 in `ratified.md` settles
   only that service-layer authorization is primary).
-- **FX provider/source** — which foreign-exchange rate provider/source is
-  used to satisfy the mandatory multi-currency requirement (R6).
+- **FX provider/source** — RESOLVED, see FX-1 in ratified.md.
 - **ProcurementMemory freshness threshold** — the requirement that
   ProcurementMemory carry freshness metadata is RATIFIED (R8); the specific
   threshold(s) that determine "fresh" vs. "stale" are OPEN.

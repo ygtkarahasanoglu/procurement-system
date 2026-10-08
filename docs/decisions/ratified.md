@@ -4275,3 +4275,16 @@ AI Gateway implementation, does not establish an ERP integration
 foundation, and is not a substitute for populating
 `06-integration-model.md` or `07-ai-and-agent-model.md` — both remain
 exactly `NOT YET RECORDED`, unaffected by this entry.
+
+### FX-1 — FX Source and Conversion Policy for Quote Comparison
+Ratified by the human owner on 2026-10-08. Satisfies R6's comparison need.
+
+1. Source: Central Bank of the Republic of Turkey (TCMB) daily bulletin (`https://www.tcmb.gov.tr/kurlar/today.xml`).
+2. Rate type: Forex Selling (`ForexSelling`) is the default. The user may choose Forex Buying (`ForexBuying`) per comparison.
+3. Rate date: one bulletin for all quotes in a comparison — the bulletin current at comparison time. Never a per-quote date.
+4. Comparison currency: TRY.
+5. Weekend/holiday: use the latest published bulletin.
+6. Audit: every recommendation that converts currencies records the source, bulletin date, rate type and each rate used, so the comparison can be reproduced later.
+
+Fail closed: if the bulletin cannot be fetched, or a quote's currency is not in it, no cross-currency recommendation is produced. No other source, cached guess or manual rate is used.
+Non-goals: hedging, forward rates, per-user saved rate preference, FX for PurchaseOrder amounts (PO keeps the quote's original currency).
