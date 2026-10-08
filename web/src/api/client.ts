@@ -125,8 +125,11 @@ export const api = {
     currency: string;
   }) => post<{ id: string; versions: QuoteVersion[] }>("/quotes", input),
 
-  generateRecommendation: (tenantId: string, sourcingEventId: string) =>
-    post<RecommendationRecord>("/recommendations", { tenantId, sourcingEventId }),
+  // FX-1 (docs/decisions/ratified.md): rateType is optional on the
+  // backend (defaults to "SELLING") — passed through only when the
+  // caller supplies one, never invented here.
+  generateRecommendation: (tenantId: string, sourcingEventId: string, rateType?: "SELLING" | "BUYING") =>
+    post<RecommendationRecord>("/recommendations", { tenantId, sourcingEventId, ...(rateType ? { rateType } : {}) }),
 
   formDecision: (input: {
     tenantId: string;

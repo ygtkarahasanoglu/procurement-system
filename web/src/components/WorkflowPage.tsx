@@ -47,6 +47,9 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
   const [selectedQuoteVersionId, setSelectedQuoteVersionId] = useState("");
   const [selectedQuantity, setSelectedQuantity] = useState("");
   const [rfqSupplierId, setRfqSupplierId] = useState("");
+  // FX-1 (docs/decisions/ratified.md): default SELLING, same as the
+  // backend's own default — only sent explicitly when the user changes it.
+  const [rateType, setRateType] = useState<"SELLING" | "BUYING">("SELLING");
   // RFQ Event History (RFQ-EH7) / Provider Delivery (RFQ-PD1–RFQ-PD20)
   // read-only operational visibility. Keyed by RFQDispatch id. Both reads
   // use the same authenticated/tenant-bound floor as getWorkflow above —
@@ -340,17 +343,37 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
                 {latestRecommendation.recommendedQuoteVersion.unitPrice} {latestRecommendation.recommendedQuoteVersion.currency}
               </div>
               <div className="value-card__rationale">{latestRecommendation.rationale}</div>
+              {/* FX-1: present only when the compared quotes spanned more
+                  than one currency and a TCMB bulletin was actually used. */}
+              {latestRecommendation.fxSource && (
+                <div className="panel-hint">
+                  {latestRecommendation.fxBulletinDate} TCMB bülteni,{" "}
+                  {latestRecommendation.fxRateType === "SELLING" ? "döviz satış" : "döviz alış"}, kullanılan kurlar:{" "}
+                  {Object.entries(latestRecommendation.fxRatesUsed ?? {})
+                    .map(([currency, rate]) => `${currency}=${rate}`)
+                    .join(", ")}
+                </div>
+              )}
             </div>
           ) : (
             <p className="empty-state">No recommendation generated yet.</p>
           )}
-          <button
-            className="btn btn--secondary"
-            disabled={busy}
-            onClick={() => runAction(() => api.generateRecommendation(tenantId, sourcingEvent.id))}
-          >
-            Generate Recommendation
-          </button>
+          <div className="decision-form">
+            <label>
+              Kur tipi:{" "}
+              <select value={rateType} onChange={(e) => setRateType(e.target.value as "SELLING" | "BUYING")}>
+                <option value="SELLING">Döviz satış</option>
+                <option value="BUYING">Döviz alış</option>
+              </select>
+            </label>
+            <button
+              className="btn btn--secondary"
+              disabled={busy}
+              onClick={() => runAction(() => api.generateRecommendation(tenantId, sourcingEvent.id, rateType))}
+            >
+              Generate Recommendation
+            </button>
+          </div>
         </section>
       )}
 

@@ -18,7 +18,7 @@ AI procurement copilot. Flow: Request -> SourcingEvent -> RFQ (email) -> Supplie
 - Every DB access to a tenant-scoped model goes through `tenantScoped(tenantId)` from `src/db/client.ts`. Known, deliberate exceptions (see that file's own comment): `Tenant`/`Session`/`ExternalIdentity` (no `tenantId` column), `RFQProviderDeliveryEvent` (nullable `tenantId`), and the RFQ-R1 supplier-response token lookup (tenant not known yet). Outside those, never use raw `prisma` for tenant data.
 - Every service function takes `tenantId` and validates ids with `src/domain/validation.ts`.
 - Approval is INSERT-only; QuoteVersion is immutable; DecisionPackage is frozen before Approval.
-- Never compare prices across different currencies (no FX source yet).
+- Cross-currency price comparison only via FX-1 (TCMB, TRY, one bulletin per comparison). Never compare raw prices across currencies.
 - Recommendation is deterministic, not AI. Do not present it as AI.
 - Never close an OPEN decision silently. If a task needs one, stop and ask me.
 - Run `npm run build` and the relevant tests before every commit.

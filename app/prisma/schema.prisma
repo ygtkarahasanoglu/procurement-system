@@ -417,6 +417,19 @@ model RecommendationRecord {
   rationale                   String
   createdAt                   DateTime      @default(now())
 
+  // FX-1 (docs/decisions/ratified.md): populated only when this
+  // recommendation's candidate quotes spanned more than one currency and
+  // TRY conversion was actually performed — null for every same-currency
+  // recommendation (no FX call is ever made in that case). fxRatesUsed
+  // is a plain { [currencyCode]: ratePerOneUnit } map for exactly the
+  // currencies present among that comparison's candidates, so a past
+  // recommendation's conversion can be reproduced later without
+  // depending on TCMB still publishing the same historical bulletin.
+  fxSource       String?
+  fxBulletinDate String?
+  fxRateType     String? // "SELLING" | "BUYING"
+  fxRatesUsed    Json?
+
   @@index([tenantId])
   @@index([sourcingEventId])
 }

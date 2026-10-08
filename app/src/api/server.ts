@@ -465,12 +465,20 @@ export function createApp(authenticator: Authenticator, sendDeps: SendRFQDispatc
 
   // RecommendationRecord has no actor column (R/O deterministic-test
   // provider) — tenant binding only.
+  //
+  // FX-1 (docs/decisions/ratified.md): optional rateType ("SELLING" |
+  // "BUYING", default SELLING). req.body.rateType is passed through
+  // as-is — undefined triggers generateRecommendation's own default
+  // parameter; any other invalid value is rejected by that function's
+  // own runtime check (ValidationError -> 400 via the existing error
+  // middleware below), so no separate validation is duplicated here.
   app.post(
     "/recommendations",
     wrap((req) =>
       recommendationService.generateRecommendation(
         assertTenantMatches(req.principal!, req.body.tenantId),
-        req.body.sourcingEventId
+        req.body.sourcingEventId,
+        req.body.rateType
       )
     )
   );

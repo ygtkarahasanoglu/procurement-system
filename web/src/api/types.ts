@@ -87,6 +87,9 @@ export interface QuoteVersion {
   };
 }
 
+/** FX-1 (docs/decisions/ratified.md): fxSource/fxBulletinDate/fxRateType/
+ * fxRatesUsed are null together whenever the compared quotes shared one
+ * currency (no FX call was made); otherwise all four are populated. */
 export interface RecommendationRecord {
   id: string;
   tenantId: string;
@@ -98,6 +101,10 @@ export interface RecommendationRecord {
   rationale: string;
   createdAt: string;
   recommendedQuoteVersion: QuoteVersion;
+  fxSource: string | null;
+  fxBulletinDate: string | null;
+  fxRateType: "SELLING" | "BUYING" | null;
+  fxRatesUsed: Record<string, number> | null;
 }
 
 export interface Approval {
