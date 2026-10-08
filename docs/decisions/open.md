@@ -7,6 +7,7 @@ event should be treated as an error and corrected, not built upon.
 
 ## Open items
 
+- **AI-1 follow-ups** — production AI provider choice (paid API / customer-hosted / local); email inbound capture; use of lead time/payment term in recommendations. All OPEN.
 - **D-1** — Role terminology collision (unresolved naming/overlap between
   role concepts identified in prior analysis).
 - **D-2** — Authorization verb layering (how multiple authorization-related

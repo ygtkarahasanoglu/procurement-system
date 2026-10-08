@@ -2488,6 +2488,8 @@ delivery-time/payment-terms/notes/attachment field exists there today).
 added — that is a separate, future domain/architecture decision, not
 pre-decided or foreclosed by `RFQ-R5`.
 
+**Partly superseded by AI-1 (supplier document upload).**
+
 ### Non-Goals (explicitly not ratified by RFQ-R1–RFQ-R5)
 
 A generic `Evidence` model; a generic `StructuredClaim`/`PersistedClaim`
@@ -4288,3 +4290,19 @@ Ratified by the human owner on 2026-10-08. Satisfies R6's comparison need.
 
 Fail closed: if the bulletin cannot be fetched, or a quote's currency is not in it, no cross-currency recommendation is produced. No other source, cached guess or manual rate is used.
 Non-goals: hedging, forward rates, per-user saved rate preference, FX for PurchaseOrder amounts (PO keeps the quote's original currency).
+
+### AI-1 — Quote Document Capture and AI Extraction
+Ratified by the human owner on 2026-10-08. First concrete instance of R11 (Source → CapturedEvidence → AI Extraction → StructuredClaim → Validation → PersistedClaim).
+
+1. Entry paths: (a) a procurement user uploads a quote document for a SourcingEvent + Supplier; (b) a supplier uploads a document through its RFQ response link instead of filling the form. Automatic capture of email replies is out of scope.
+2. Formats: PDF, XLSX, JPG, PNG. Max 10 MB per file.
+3. The original file is stored unchanged (CapturedEvidence) in PostgreSQL with its SHA-256 hash.
+4. AI extraction produces a StructuredClaim only: candidate lines (description, quantity, unit, unit price, currency) and optional lead time (days), payment term (days), validity date, Incoterm.
+5. Validation is human: a QuoteVersion is created only when a procurement user reviews, edits if needed, and confirms. No automatic QuoteVersion creation at any confidence level (R12).
+6. Document content is untrusted data. Text inside a document can never trigger an action; it can only fill extraction fields.
+7. AI provider is pluggable per deployment, chosen by configuration. Development default: Google Gemini API free tier, used ONLY with test/sample documents, never real customer data (free-tier content may be used by the provider to improve its products). With no provider configured ("none"), documents are still stored and the user enters the quote manually next to the original. Production provider (e.g. Anthropic Claude API, Claude via the customer's own cloud account, or a local model) is decided per customer and remains OPEN; adding one must not change domain code.
+8. Lead time, payment term, validity and Incoterm are stored on QuoteVersion and displayed, but are not used by the recommendation rule yet.
+
+**Partly supersedes RFQ-R5:** a supplier may upload one quote document (PDF/XLSX/JPG/PNG, max 10 MB) through its RFQ response link. The upload consumes the token and changes the dispatch state exactly like a form submission. The document is stored as evidence and only a procurement user's confirmation creates a QuoteVersion. All other RFQ-R5 limits stay in force: no free-form notes, no email-based ingestion, no supplier-entered lead time/payment/validity form fields.
+
+Non-goals: email inbound parsing, supplier portal/login, automatic quote acceptance, OCR libraries, background queue/worker, using extra fields in recommendations.
