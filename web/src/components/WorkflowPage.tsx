@@ -1,8 +1,17 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { Product, RequestLineWorkflow, RfqCommunicationEvent, RfqProviderDeliveryEvent, Supplier, User } from "../api/types";
+import type {
+  Product,
+  QuoteExtraction,
+  RequestLineWorkflow,
+  RfqCommunicationEvent,
+  RfqProviderDeliveryEvent,
+  Supplier,
+  User,
+} from "../api/types";
 import { StatusStepper } from "./StatusStepper";
 import { QuoteForm } from "./QuoteForm";
+import { QuoteDocumentUploadButton, QuoteExtractionReview } from "./QuoteDocumentUpload";
 
 // RFQ-PD1–RFQ-PD20 (docs/decisions/ratified.md): maps the closed,
 // provider-neutral delivery vocabulary onto display text that preserves
@@ -57,14 +66,28 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
   const [dispatchEvents, setDispatchEvents] = useState<
     Record<string, { comm: RfqCommunicationEvent[]; provider: RfqProviderDeliveryEvent[] }>
   >({});
+  // AI-1 (docs/decisions/ratified.md): every QuoteExtraction for this
+  // SourcingEvent, re-fetched alongside the workflow aggregate — the UI
+  // holds no business rule of its own, same discipline as every other
+  // section on this page.
+  const [extractions, setExtractions] = useState<QuoteExtraction[]>([]);
 
   const reload = useCallback(() => {
     api.getWorkflow(tenantId, requestLineId).then(setData).catch(onError);
   }, [tenantId, requestLineId, onError]);
 
+  const reloadExtractions = useCallback(() => {
+    if (!data?.sourcingEvent) return;
+    api.getQuoteExtractions(tenantId, data.sourcingEvent.id).then(setExtractions).catch(onError);
+  }, [tenantId, data, onError]);
+
   useEffect(() => {
     reload();
   }, [reload]);
+
+  useEffect(() => {
+    reloadExtractions();
+  }, [reloadExtractions]);
 
   useEffect(() => {
     if (!data) return;
@@ -301,6 +324,10 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
                   <th>Unit</th>
                   <th>Unit Price</th>
                   <th>Currency</th>
+                  <th>Lead time</th>
+                  <th>Payment term</th>
+                  <th>Valid until</th>
+                  <th>Incoterm</th>
                 </tr>
               </thead>
               <tbody>
@@ -311,11 +338,47 @@ export function WorkflowPage({ tenantId, actorUserId, requestLineId, products, s
                     <td>{q.unit}</td>
                     <td>{q.unitPrice}</td>
                     <td>{q.currency}</td>
+                    <td>{q.leadTimeDays !== null ? `${q.leadTimeDays}d` : "—"}</td>
+                    <td>{q.paymentTermDays !== null ? `${q.paymentTermDays}d` : "—"}</td>
+                    <td>{q.validUntil ? new Date(q.validUntil).toLocaleDateString() : "—"}</td>
+                    <td>{q.incoterm ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+
+          {/* AI-1 (docs/decisions/ratified.md): per-supplier document
+              upload, parallel to the manual form below. */}
+          <h4>Teklif belgesi yükleme</h4>
+          {suppliers.map((s) => {
+            const supplierExtractions = extractions.filter((e) => e.quoteDocument.supplierId === s.id);
+            return (
+              <div key={s.id} className="quote-document-upload-row">
+                <strong>{s.name}</strong>
+                <QuoteDocumentUploadButton
+                  sourcingEventId={sourcingEvent.id}
+                  supplierId={s.id}
+                  onUploaded={reloadExtractions}
+                  onError={onError}
+                />
+                {supplierExtractions.map((ext) => (
+                  <QuoteExtractionReview
+                    key={ext.id}
+                    tenantId={tenantId}
+                    extraction={ext}
+                    products={products}
+                    onChanged={() => {
+                      reload();
+                      reloadExtractions();
+                    }}
+                    onError={onError}
+                  />
+                ))}
+              </div>
+            );
+          })}
+
           <QuoteForm
             suppliers={suppliers}
             onSubmit={(input) =>

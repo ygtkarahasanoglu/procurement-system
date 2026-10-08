@@ -6,6 +6,8 @@ import type {
   ProcurementRequest,
   Product,
   PurchaseOrder,
+  QuoteExtraction,
+  QuoteDocumentSummary,
   QuoteVersion,
   RecommendationRecord,
   RequestLineWorkflow,
@@ -123,7 +125,51 @@ export const api = {
     unit: string;
     unitPrice: number;
     currency: string;
+    // AI-1 (docs/decisions/ratified.md): optional, displayed-only fields.
+    leadTimeDays?: number;
+    paymentTermDays?: number;
+    validUntil?: string;
+    incoterm?: string;
   }) => post<{ id: string; versions: QuoteVersion[] }>("/quotes", input),
+
+  // AI-1: buyer quote-document upload + AI extraction review.
+  uploadQuoteDocument: (input: { sourcingEventId: string; supplierId: string; fileName: string; mimeType: string; base64: string }) =>
+    post<{ document: QuoteDocumentSummary; extraction: QuoteExtraction }>("/quote-documents", input),
+
+  getQuoteExtractions: (tenantId: string, sourcingEventId: string) =>
+    get<QuoteExtraction[]>(`/sourcing-events/${sourcingEventId}/quote-extractions?tenantId=${tenantId}`),
+
+  confirmExtraction: (
+    tenantId: string,
+    extractionId: string,
+    input: {
+      productId: string;
+      quotedQuantity: number;
+      unit: string;
+      unitPrice: number;
+      currency: string;
+      leadTimeDays?: number;
+      paymentTermDays?: number;
+      validUntil?: string;
+      incoterm?: string;
+    }
+  ) => post<{ id: string; versions: QuoteVersion[] }>(`/quote-extractions/${extractionId}/confirm`, { tenantId, ...input }),
+
+  rejectExtraction: (tenantId: string, extractionId: string) =>
+    post<QuoteExtraction>(`/quote-extractions/${extractionId}/reject`, { tenantId }),
+
+  // Not a JSON call — the direct URL for the original file (opened via
+  // a plain <a href> link, never fetched through `request()` above).
+  quoteDocumentFileUrl: (tenantId: string, quoteDocumentId: string) =>
+    `${API_BASE_URL}/quote-documents/${quoteDocumentId}/file?tenantId=${tenantId}`,
+
+  // AI-1 commit 4: supplier document upload via the RFQ response link —
+  // Principal-free, same carve-out as submitRfqResponse below.
+  uploadRfqResponseDocument: (token: string, input: { fileName: string; mimeType: string; base64: string }) =>
+    post<{ document: QuoteDocumentSummary; extraction: QuoteExtraction }>(
+      `/rfq-responses/${encodeURIComponent(token)}/document`,
+      input
+    ),
 
   // FX-1 (docs/decisions/ratified.md): rateType is optional on the
   // backend (defaults to "SELLING") — passed through only when the

@@ -85,6 +85,57 @@ export interface QuoteVersion {
     supplierId: string;
     supplier: Supplier;
   };
+  // AI-1 (docs/decisions/ratified.md): displayed only — never read by
+  // recommendationService.ts.
+  leadTimeDays: number | null;
+  paymentTermDays: number | null;
+  validUntil: string | null;
+  incoterm: string | null;
+}
+
+/** AI-1 (docs/decisions/ratified.md) — one candidate line from the
+ * StructuredClaim an AI extraction produced. Document content is
+ * untrusted data (R11 item 6): these are plain fields to review/edit,
+ * never instructions. */
+export interface ExtractedQuoteLine {
+  description: string;
+  quantity: string;
+  unit: string;
+  unitPrice: string;
+  currency: string;
+}
+
+export interface ExtractedQuoteData {
+  lines: ExtractedQuoteLine[];
+  leadTimeDays?: number;
+  paymentTermDays?: number;
+  validUntil?: string;
+  incoterm?: string;
+}
+
+/** Returned nested under QuoteExtraction below — never includes the raw
+ * file bytes (GET /quote-documents/:id/file is the one dedicated path
+ * for that). */
+export interface QuoteDocumentSummary {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedVia: "USER" | "SUPPLIER_LINK";
+  supplierId: string;
+  createdAt: string;
+}
+
+export interface QuoteExtraction {
+  id: string;
+  provider: string;
+  model: string;
+  status: "PENDING_REVIEW" | "CONFIRMED" | "REJECTED" | "FAILED";
+  extracted: ExtractedQuoteData | null;
+  errorMessage: string | null;
+  quoteVersionId: string | null;
+  createdAt: string;
+  quoteDocument: QuoteDocumentSummary;
 }
 
 /** FX-1 (docs/decisions/ratified.md): fxSource/fxBulletinDate/fxRateType/
